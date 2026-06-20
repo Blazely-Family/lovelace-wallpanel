@@ -26,6 +26,7 @@ const defaultConfig = {
 	fullscreen: false,
 	keep_fullscreen: true,
 	z_index: 1000,
+	screensaver_underlay: false,
 	idle_time: 15,
 	fade_in_time: 3.0,
 	fade_out_time_motion_detected: 1.0,
@@ -1409,6 +1410,12 @@ function navigate(path, keepSearch = true) {
 	if (keepSearch && !path.includes("?")) {
 		path += window.location.search;
 	}
+
+	const currentPath = window.location.pathname + window.location.search + window.location.hash;
+	if (path === currentPath) {
+		return;
+	}
+
 	history.pushState(null, "", path);
 	elHass.dispatchEvent(
 		new Event("location-changed", {
@@ -4634,6 +4641,28 @@ function initWallpanel() {
 				return;
 			}
 
+			// Lock scroll before entity state / navigation so HA re-renders
+			// don't briefly show a scrollbar during the transition.
+			document.documentElement.style.overflow = "hidden";
+
+			// In underlay mode, set entity state and navigate immediately so the
+			// dashboard is in the correct state before the wallpanel image fades in.
+			if (config.screensaver_underlay) {
+				this.setScreensaverEntityState();
+				if (config.screensaver_start_navigation_path) {
+					skipDisableScreensaverOnLocationChanged = true;
+					navigate(config.screensaver_start_navigation_path);
+					setTimeout(() => {
+						skipDisableScreensaverOnLocationChanged = false;
+					}, 5000);
+				}
+				if (config.screensaver_stop_close_browser_mod_popup) {
+					getActiveBrowserModPopups().forEach((popup) => {
+						popup.closeDialog();
+					});
+				}
+			}
+
 			const activeElement = this.getActiveMediaElement();
 			if (activeElement == this.imageOne) {
 				this.imageOneContainer.style.opacity = 1;
@@ -4669,7 +4698,6 @@ function initWallpanel() {
 
 			this.lastMove = Date.now();
 			this.lastMediaUpdate = Date.now();
-			document.documentElement.style.overflow = "hidden";
 
 			// Reset state relevant to slideshow pause.
 			this.isPaused = false;
@@ -4678,30 +4706,40 @@ function initWallpanel() {
 
 			this.createInfoBoxContent();
 
+			if (config.screensaver_underlay) {
+				// Container is permanently positioned at z-index:-1 (set at init).
+				// Just make pointer-events transparent so card clicks pass through.
+				this.style.pointerEvents = "none";
+			} else {
+				this.style.zIndex = config.z_index;
+				this.style.pointerEvents = "auto";
+			}
+
 			this.style.visibility = "visible";
 			this.style.opacity = 1;
-			this.style.pointerEvents = "auto";
 
-			this.setScreensaverEntityState();
+			if (!config.screensaver_underlay) {
+				this.setScreensaverEntityState();
 
-			if (config.screensaver_start_navigation_path || config.screensaver_stop_close_browser_mod_popup) {
-				this.screensaverStopNavigationPathTimeout = setTimeout(
-					() => {
-						if (config.screensaver_start_navigation_path) {
-							skipDisableScreensaverOnLocationChanged = true;
-							navigate(config.screensaver_start_navigation_path);
-							setTimeout(() => {
-								skipDisableScreensaverOnLocationChanged = false;
-							}, 5000);
-						}
-						if (config.screensaver_stop_close_browser_mod_popup) {
-							getActiveBrowserModPopups().forEach((popup) => {
-								popup.closeDialog();
-							});
-						}
-					},
-					(config.fade_in_time + 1) * 1000
-				);
+				if (config.screensaver_start_navigation_path || config.screensaver_stop_close_browser_mod_popup) {
+					this.screensaverStopNavigationPathTimeout = setTimeout(
+						() => {
+							if (config.screensaver_start_navigation_path) {
+								skipDisableScreensaverOnLocationChanged = true;
+								navigate(config.screensaver_start_navigation_path);
+								setTimeout(() => {
+									skipDisableScreensaverOnLocationChanged = false;
+								}, 5000);
+							}
+							if (config.screensaver_stop_close_browser_mod_popup) {
+								getActiveBrowserModPopups().forEach((popup) => {
+									popup.closeDialog();
+								});
+							}
+						},
+						(config.fade_in_time + 1) * 1000
+					);
+				}
 			}
 		}
 
@@ -4721,7 +4759,13 @@ function initWallpanel() {
 			this.screensaverStartedAt = null;
 			this.screensaverStoppedAt = Date.now();
 
-			document.documentElement.style.removeProperty("overflow");
+			if (fadeOutTime > 0) {
+				setTimeout(() => {
+					document.documentElement.style.removeProperty("overflow");
+				}, Math.round(fadeOutTime * 1000));
+			} else {
+				document.documentElement.style.removeProperty("overflow");
+			}
 
 			if (this.screensaverStopNavigationPathTimeout) {
 				clearTimeout(this.screensaverStopNavigationPathTimeout);
@@ -4737,6 +4781,7 @@ function initWallpanel() {
 			this.style.opacity = 0;
 			this.style.visibility = "hidden";
 			this.style.pointerEvents = "none";
+			this.style.zIndex = config.z_index;
 			this.imageOneInfo.style.pointerEvents = "none";
 			this.imageTwoInfo.style.pointerEvents = "none";
 			this.infoBoxPosX.style.animation = "";
@@ -5056,7 +5101,7 @@ function initWallpanel() {
 			}
 
 			if (!this.screensaverRunning()) {
-				if (this.blockEventsUntil > now) {
+				if (this.blockEventsUntil > now && !config.screensaver_underlay) {
 					if (isClick) {
 						evt.preventDefault();
 					}
@@ -5223,6 +5268,10 @@ function initWallpanel() {
 	}
 	wallpanelContainer = document.createElement("wallpanel-view-container");
 	wallpanel = document.createElement("wallpanel-view");
+	if (config.screensaver_underlay) {
+		wallpanelContainer.style.position = "absolute";
+		wallpanelContainer.style.zIndex = -1;
+	}
 	wallpanelContainer.appendChild(wallpanel);
 	elHaMain.shadowRoot.appendChild(wallpanelContainer);
 }
