@@ -87,13 +87,17 @@ loads), also give it the condition natively:
   cards: ...
 ```
 
-The view footer follows the same rule: put `wallpanel_screensaver: show` or `wallpanel_screensaver: only` in the
-view's `footer` configuration, or leave it out to hide the footer while the screensaver runs. The footer is faded
-with opacity, so the layout does not change.
+The view header and footer follow the same rule: put `wallpanel_screensaver: show` or `wallpanel_screensaver: only`
+in the view's `header` or `footer` configuration, or leave it out to hide it while the screensaver runs. They are
+faded with opacity, so the layout does not change.
 
 ```yaml
-footer:
+header:
   wallpanel_screensaver: show
+  card:
+    type: markdown
+    content: "# Welcome home"
+footer:
   card:
     type: custom:navbar-card
 ```

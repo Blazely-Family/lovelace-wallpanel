@@ -3,7 +3,7 @@
  * Released under the GNU General Public License v3.0
  */
 
-const version = "4.68.0-blazely.5";
+const version = "4.68.0-blazely.6";
 const mediaLoadRetryDelay = 1000;
 const mediaListRetryDelay = 3000;
 const mediaListRateLimitRetryDelay = 60000;
@@ -1548,7 +1548,7 @@ function setupUnderlaySections() {
 			logger.warning("Cannot hook hui-section config, underlay screensaver sections are disabled");
 		} else if (config.screensaver_underlay) {
 			prepareUnderlaySections();
-			setUnderlayFootersState(underlayMediaQuery.matches, 0);
+			setUnderlayHeaderFooterState(underlayMediaQuery.matches, 0);
 		}
 	});
 }
@@ -1572,21 +1572,22 @@ function getUnderlaySections() {
 	return querySectionsViews("hui-section");
 }
 
-// The view footer follows the same `wallpanel_screensaver` rule as a section (hidden
-// while the screensaver runs by default). It is faded with opacity, so the layout does
-// not change. With hideOnly, footers that should become visible are left as they are.
-function setUnderlayFootersState(screensaverActive, fadeTime, hideOnly = false) {
+// The view header and footer follow the same `wallpanel_screensaver` rule as a section
+// (hidden while the screensaver runs by default). They are faded with opacity, so the
+// layout does not change. With hideOnly, the ones that should become visible are left
+// as they are.
+function setUnderlayHeaderFooterState(screensaverActive, fadeTime, hideOnly = false) {
 	const transition = fadeTime > 0 ? `opacity ${Math.round(fadeTime * 1000)}ms ease-in-out` : "";
-	querySectionsViews("hui-view-footer").forEach((footer) => {
-		const role = getUnderlaySectionRole(footer.config);
+	querySectionsViews("hui-view-header, hui-view-footer").forEach((element) => {
+		const role = getUnderlaySectionRole(element.config);
 		const visible =
-			Boolean(footer.lovelace?.editMode) ||
+			Boolean(element.lovelace?.editMode) ||
 			role === "always" ||
 			(role === "only" ? screensaverActive : !screensaverActive);
 		if (hideOnly && visible) return;
-		footer.style.transition = transition;
-		footer.style.opacity = visible ? "" : "0";
-		footer.style.pointerEvents = visible ? "" : "none";
+		element.style.transition = transition;
+		element.style.opacity = visible ? "" : "0";
+		element.style.pointerEvents = visible ? "" : "none";
 	});
 }
 
@@ -1615,8 +1616,8 @@ function prepareUnderlaySections(sections = getUnderlaySwitchedSections()) {
 
 // Switch the dashboard sections between their normal and screensaver state:
 // fade out the sections that will be hidden, switch the media query (HA re-evaluates the
-// section visibility) and fade in the sections that appeared. The view footer is faded
-// out and in with them.
+// section visibility) and fade in the sections that appeared. The view header and footer
+// are faded out and in with them.
 // Returns false if a newer switch or isCurrent() superseded this one.
 async function switchUnderlaySections(screensaverActive, fadeTime, isCurrent = () => true) {
 	const sequence = ++underlaySwitchSequence;
@@ -1626,11 +1627,11 @@ async function switchUnderlaySections(screensaverActive, fadeTime, isCurrent = (
 	const before = getUnderlaySwitchedSections();
 	if (underlayMediaQuery.matches === screensaverActive) {
 		clearSectionsFade(before);
-		setUnderlayFootersState(screensaverActive, 0);
+		setUnderlayHeaderFooterState(screensaverActive, 0);
 		return current();
 	}
 
-	setUnderlayFootersState(screensaverActive, fadeTime, true);
+	setUnderlayHeaderFooterState(screensaverActive, fadeTime, true);
 	if (fadeTime > 0) {
 		setSectionsOpacity(
 			before.filter((section) => !section.hidden),
@@ -1650,7 +1651,7 @@ async function switchUnderlaySections(screensaverActive, fadeTime, isCurrent = (
 	underlayMediaQuery.setMatches(screensaverActive);
 	await nextAnimationFrames(2);
 	if (!current()) return false;
-	setUnderlayFootersState(screensaverActive, fadeTime);
+	setUnderlayHeaderFooterState(screensaverActive, fadeTime);
 
 	const after = getUnderlaySwitchedSections();
 	if (fadeTime > 0) {
@@ -5763,7 +5764,7 @@ function initWallpanel() {
 	elHaMain.shadowRoot.appendChild(wallpanelContainer);
 	if (config.screensaver_underlay) {
 		prepareUnderlaySections();
-		setUnderlayFootersState(underlayMediaQuery.matches, 0);
+		setUnderlayHeaderFooterState(underlayMediaQuery.matches, 0);
 	}
 }
 
