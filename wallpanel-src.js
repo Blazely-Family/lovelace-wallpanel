@@ -3,7 +3,7 @@
  * Released under the GNU General Public License v3.0
  */
 
-const version = "4.68.0-blazely.2";
+const version = "4.68.0-blazely.3";
 const mediaLoadRetryDelay = 1000;
 const mediaListRetryDelay = 3000;
 const mediaListRateLimitRetryDelay = 60000;
@@ -1529,6 +1529,8 @@ function setupUnderlaySections() {
 		);
 		if (!underlaySectionHook) {
 			logger.warning("Cannot hook hui-section config, underlay screensaver sections are disabled");
+		} else if (config.screensaver_underlay) {
+			prepareUnderlaySections();
 		}
 	});
 }
@@ -1552,6 +1554,19 @@ function getUnderlaySwitchedSections() {
 	return getUnderlaySections().filter((section) => {
 		const sectionConfig = underlaySectionHook ? underlaySectionHook.originalOf(section.config) : section.config;
 		return getUnderlaySectionRole(sectionConfig) !== "always";
+	});
+}
+
+// Give sections that were rendered before the config hook was installed their
+// visibility rule. Home Assistant rebuilds a section when its config changes, which can
+// shift the layout, so this is done when WallPanel starts rather than in a transition.
+function prepareUnderlaySections(sections = getUnderlaySwitchedSections()) {
+	if (!underlaySectionHook) return;
+	sections.forEach((section) => {
+		const sectionConfig = section.config;
+		if (!sectionConfig || underlaySectionHook.isConverted(sectionConfig)) return;
+		const convertedConfig = underlaySectionHook.convert(sectionConfig);
+		if (convertedConfig !== sectionConfig) section.config = convertedConfig;
 	});
 }
 
@@ -1579,16 +1594,9 @@ async function switchUnderlaySections(screensaverActive, fadeTime, isCurrent = (
 		if (!current()) return false;
 	}
 
-	// Sections that were rendered before the config hook was installed get their
-	// visibility rule now (they are hidden or faded out at this point).
-	if (underlaySectionHook) {
-		before.forEach((section) => {
-			const sectionConfig = section.config;
-			if (!sectionConfig || underlaySectionHook.isConverted(sectionConfig)) return;
-			const convertedConfig = underlaySectionHook.convert(sectionConfig);
-			if (convertedConfig !== sectionConfig) section.config = convertedConfig;
-		});
-	}
+	// Fallback for sections that still miss their visibility rule (they are hidden or
+	// faded out at this point).
+	prepareUnderlaySections(before);
 
 	const hiddenBefore = before.filter((section) => section.hidden);
 	if (fadeTime > 0) setSectionsOpacity(hiddenBefore, 0, 0);
@@ -5705,6 +5713,7 @@ function initWallpanel() {
 	applyUnderlayContainerStyle();
 	wallpanelContainer.appendChild(wallpanel);
 	elHaMain.shadowRoot.appendChild(wallpanelContainer);
+	if (config.screensaver_underlay) prepareUnderlaySections();
 }
 
 function activateWallpanel() {
