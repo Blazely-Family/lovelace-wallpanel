@@ -21,6 +21,7 @@ You can set the following configuration parameters for every individual Home Ass
 | z_index                          | Wallpanels base CSS z-index.                                                                           | 1000      |
 | screensaver_underlay             | *(Blazely fork)* Show the screensaver media **behind** the live dashboard instead of over it. See [Underlay mode](screensaver.md#underlay-mode-blazely-fork). | false     |
 | screensaver_underlay_content_fade_time | *(Blazely fork)* Underlay mode: fade time in seconds for the dashboard sections that are hidden or shown when the screensaver starts and stops (0 = switch instantly). | 0.5       |
+| screensaver_underlay_style | *(Blazely fork)* Underlay mode: extra CSS for the dashboard (`hui-root`), for example to change the card style while the screensaver runs. See [Styling during the screensaver](screensaver.md#styling-during-the-screensaver). | |
 | idle_time                        | Time in seconds after which the screensaver will start (0 = screensaver disabled).                     | 15        |
 | fade_in_time                     | Screensaver fade-in time in seconds.                                                                   | 3.0       |
 | fade_out_time_motion_detected    | Screensaver fade-out time in seconds when the screensaver is stopped because motion is detected.       | 1.0       |

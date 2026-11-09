@@ -105,6 +105,35 @@ footer:
 `screensaver_entity` is optional in underlay mode. It still reflects and controls the screensaver state, for example
 for automations, but the dashboard layout no longer depends on it.
 
+### Styling during the screensaver
+`screensaver_underlay_style` adds CSS to the dashboard's `hui-root` element. CSS custom properties set on
+`:host` reach every card, so this is the place to restyle cards while the screensaver runs, for example a
+theme's card background variable.
+
+- `:host([wallpanel-underlay-background-hidden])` matches while the screensaver runs (from the moment the
+  backgrounds start fading out until they start fading back in).
+- `--wallpanel-screensaver` is a number that goes from `0` to `1` over the background fade when the
+  screensaver starts, and back when it stops. Use it in `calc()` to fade values smoothly; a rule under the
+  attribute above switches at once.
+
+Example for the Frosted Glass Lite themes: darken the card glass during the screensaver, fading with the
+backgrounds, and add a grain texture while it runs:
+
+```yaml
+wallpanel:
+  screensaver_underlay: true
+  screensaver_underlay_style: |
+    :host {
+      --ha-card-glass-tint: rgba(28, 29, 33, calc(0.54 + 0.09 * var(--wallpanel-screensaver)));
+    }
+    :host([wallpanel-underlay-background-hidden]) {
+      --ha-card-glass-tint: url("/local/grain.png"), rgba(28, 29, 33, calc(0.54 + 0.09 * var(--wallpanel-screensaver)));
+    }
+```
+
+Avoid `backdrop-filter` (blur) on cards: with a moving slideshow behind them it is recalculated on every
+frame and is expensive on low-power devices.
+
 ### Transitions
 
 - **Start:** the first media item is loaded while the dashboard is still unchanged. The media is then revealed by fading

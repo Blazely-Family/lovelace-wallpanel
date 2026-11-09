@@ -3,7 +3,7 @@
  * Released under the GNU General Public License v3.0
  */
 
-const version = "4.68.0-blazely.6";
+const version = "4.68.0-blazely.7";
 const mediaLoadRetryDelay = 1000;
 const mediaListRetryDelay = 3000;
 const mediaListRateLimitRetryDelay = 60000;
@@ -28,6 +28,7 @@ const defaultConfig = {
 	z_index: 1000,
 	screensaver_underlay: false,
 	screensaver_underlay_content_fade_time: 0.5,
+	screensaver_underlay_style: "",
 	idle_time: 15,
 	fade_in_time: 3.0,
 	fade_out_time_motion_detected: 1.0,
@@ -1321,6 +1322,9 @@ const UNDERLAY_Z_INDEX = -2;
 const UNDERLAY_STYLE_ID = "wallpanel-underlay-style";
 const UNDERLAY_BACKGROUND_HIDDEN_ATTR = "wallpanel-underlay-background-hidden";
 const UNDERLAY_BACKGROUND_FADE_PROPERTY = "--wallpanel-underlay-background-fade";
+// Number on hui-root that goes from 0 to 1 while the backgrounds fade out (and back),
+// so that styles from screensaver_underlay_style can fade along with them.
+const UNDERLAY_PROGRESS_PROPERTY = "--wallpanel-screensaver";
 
 const UNDERLAY_HA_MAIN_CSS = `
 	partial-panel-resolver::before {
@@ -1338,7 +1342,28 @@ const UNDERLAY_HUI_ROOT_CSS = `
 	:host([${UNDERLAY_BACKGROUND_HIDDEN_ATTR}]) #view > hui-view-background {
 		opacity: 0 !important;
 	}
+	:host {
+		transition: ${UNDERLAY_PROGRESS_PROPERTY} var(${UNDERLAY_BACKGROUND_FADE_PROPERTY}, 0ms) ease-in-out;
+	}
+	:host([${UNDERLAY_BACKGROUND_HIDDEN_ATTR}]) {
+		${UNDERLAY_PROGRESS_PROPERTY}: 1;
+	}
 `;
+
+// A registered (typed) custom property can be transitioned; an unregistered one would jump.
+function registerUnderlayProgressProperty() {
+	try {
+		window.CSS?.registerProperty?.({
+			name: UNDERLAY_PROGRESS_PROPERTY,
+			syntax: "<number>",
+			inherits: true,
+			initialValue: "0"
+		});
+	} catch {
+		// Already registered.
+	}
+}
+registerUnderlayProgressProperty();
 
 function getHuiRoot() {
 	try {
@@ -1350,17 +1375,26 @@ function getHuiRoot() {
 }
 
 function ensureUnderlayStyle(root, css) {
-	if (!root || root.getElementById(UNDERLAY_STYLE_ID)) return;
-	const style = document.createElement("style");
-	style.id = UNDERLAY_STYLE_ID;
-	style.textContent = css;
-	root.appendChild(style);
+	if (!root) return;
+	let style = root.getElementById(UNDERLAY_STYLE_ID);
+	if (!style) {
+		style = document.createElement("style");
+		style.id = UNDERLAY_STYLE_ID;
+		root.appendChild(style);
+	}
+	if (style.textContent !== css) style.textContent = css;
+}
+
+// Add WallPanel's underlay styles (and the user's screensaver_underlay_style) to
+// home-assistant-main and the current dashboard's hui-root.
+function ensureUnderlayStyles(huiRoot = getHuiRoot()) {
+	ensureUnderlayStyle(elHaMain?.shadowRoot, UNDERLAY_HA_MAIN_CSS);
+	ensureUnderlayStyle(huiRoot?.shadowRoot, UNDERLAY_HUI_ROOT_CSS + (config.screensaver_underlay_style || ""));
 }
 
 function setUnderlayAttribute(attribute, enabled) {
 	const huiRoot = getHuiRoot();
-	ensureUnderlayStyle(elHaMain?.shadowRoot, UNDERLAY_HA_MAIN_CSS);
-	ensureUnderlayStyle(huiRoot?.shadowRoot, UNDERLAY_HUI_ROOT_CSS);
+	ensureUnderlayStyles(huiRoot);
 	[elHaMain, huiRoot].forEach((element) => {
 		if (element) element.toggleAttribute(attribute, enabled);
 	});
@@ -1547,6 +1581,7 @@ function setupUnderlaySections() {
 		if (!underlaySectionHook) {
 			logger.warning("Cannot hook hui-section config, underlay screensaver sections are disabled");
 		} else if (config.screensaver_underlay) {
+			ensureUnderlayStyles();
 			prepareUnderlaySections();
 			setUnderlayHeaderFooterState(underlayMediaQuery.matches, 0);
 		}
@@ -5763,6 +5798,7 @@ function initWallpanel() {
 	wallpanelContainer.appendChild(wallpanel);
 	elHaMain.shadowRoot.appendChild(wallpanelContainer);
 	if (config.screensaver_underlay) {
+		ensureUnderlayStyles();
 		prepareUnderlaySections();
 		setUnderlayHeaderFooterState(underlayMediaQuery.matches, 0);
 	}
