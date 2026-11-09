@@ -1,5 +1,11 @@
 # WallPanel
 
+> **Blazely fork** of [j-a-n/lovelace-wallpanel](https://github.com/j-a-n/lovelace-wallpanel).
+> Adds `screensaver_underlay` (screensaver media behind the live dashboard, with background crossfades and
+> per-section fades) and a fix for Home Assistant 2026.11 in Firefox.
+> See [Underlay mode](docs/screensaver.md#underlay-mode-blazely-fork). Install via HACS as a custom repository
+> (`Blazely-Family/lovelace-wallpanel`, category *Dashboard*).
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/j-a-n/lovelace-wallpanel?style=for-the-badge)](https://github.com/j-a-n/lovelace-wallpanel/releases)
 [![GitHub stars](https://img.shields.io/github/stars/j-a-n/lovelace-wallpanel?color=yellow&style=for-the-badge)](https://github.com/j-a-n/lovelace-wallpanel/stargazers)

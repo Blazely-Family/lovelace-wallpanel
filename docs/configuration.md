@@ -19,6 +19,9 @@ You can set the following configuration parameters for every individual Home Ass
 | fullscreen                       | Set browser window to fullscreen? <br>*Due to browser restrictions you will need to interact with the screen once to activate fullscreen mode after loading the dashboard page.* | false   |
 | keep_fullscreen                  | Keep fullscreen active if the wallpanel is deactivated, for instance when disabled in a view.          | true      |
 | z_index                          | Wallpanels base CSS z-index.                                                                           | 1000      |
+| screensaver_underlay             | *(Blazely fork)* Show the screensaver media **behind** the live dashboard instead of over it. See [Underlay mode](screensaver.md#underlay-mode-blazely-fork). | false     |
+| screensaver_underlay_content_fade_time | *(Blazely fork)* Underlay mode: fade time in seconds for the sections that change with `screensaver_entity` (0 = swap instantly). | 0.5       |
+| screensaver_underlay_render_delay | *(Blazely fork)* Underlay mode: extra wait in seconds after `screensaver_entity` changes, before the new sections fade in. | 0.1       |
 | idle_time                        | Time in seconds after which the screensaver will start (0 = screensaver disabled).                     | 15        |
 | fade_in_time                     | Screensaver fade-in time in seconds.                                                                   | 3.0       |
 | fade_out_time_motion_detected    | Screensaver fade-out time in seconds when the screensaver is stopped because motion is detected.       | 1.0       |

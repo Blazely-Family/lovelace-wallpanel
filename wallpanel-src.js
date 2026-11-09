@@ -3,7 +3,7 @@
  * Released under the GNU General Public License v3.0
  */
 
-const version = "4.68.0";
+const version = "4.68.0-blazely.1";
 const mediaLoadRetryDelay = 1000;
 const mediaListRetryDelay = 3000;
 const mediaListRateLimitRetryDelay = 60000;
@@ -27,6 +27,8 @@ const defaultConfig = {
 	keep_fullscreen: true,
 	z_index: 1000,
 	screensaver_underlay: false,
+	screensaver_underlay_content_fade_time: 0.5,
+	screensaver_underlay_render_delay: 0.1,
 	idle_time: 15,
 	fade_in_time: 3.0,
 	fade_out_time_motion_detected: 1.0,
@@ -1283,6 +1285,156 @@ function getHaPanelLovelace() {
 	}
 }
 
+// Underlay mode layering.
+// Since Home Assistant 2026.11, home-assistant-main is an isolated stacking context
+// that also holds HA's own z-index:-1 layers (the panel background drawn by
+// partial-panel-resolver::before and hui-view-background), plus any card layers at
+// z-index:-1 that are not contained by their card (e.g. theme "glass" ::before layers).
+// The underlay container therefore sits below all of them at z-index:-2.
+// home-assistant-main has no display set, so it is display:inline. Firefox does not
+// build a proper stacking context for an inline element with block children (the
+// inline is split around them), and z-index ordering inside it breaks: the container
+// covered every card without its own positive z-index. Underlay mode therefore makes
+// home-assistant-main display:block, which does not change HA's layout.
+// While the screensaver runs, the media is shown at full opacity underneath and HA's
+// background layers are faded out over it (and faded back in on stop), which looks the
+// same as the media fading in on top of the background.
+// Sections whose visibility depends on screensaver_entity are faded out before the
+// entity is switched and faded in afterwards; other sections are left untouched.
+// A section can opt in or out explicitly with `wallpanel_fade: true|false` in its config.
+const UNDERLAY_Z_INDEX = -2;
+const UNDERLAY_STYLE_ID = "wallpanel-underlay-style";
+const UNDERLAY_BACKGROUND_HIDDEN_ATTR = "wallpanel-underlay-background-hidden";
+const UNDERLAY_BACKGROUND_FADE_PROPERTY = "--wallpanel-underlay-background-fade";
+
+const UNDERLAY_HA_MAIN_CSS = `
+	partial-panel-resolver::before {
+		transition: opacity var(${UNDERLAY_BACKGROUND_FADE_PROPERTY}, 0ms) ease-in-out;
+	}
+	:host([${UNDERLAY_BACKGROUND_HIDDEN_ATTR}]) partial-panel-resolver::before {
+		opacity: 0;
+	}
+`;
+
+const UNDERLAY_HUI_ROOT_CSS = `
+	#view > hui-view-background {
+		transition: opacity var(${UNDERLAY_BACKGROUND_FADE_PROPERTY}, 0ms) ease-in-out;
+	}
+	:host([${UNDERLAY_BACKGROUND_HIDDEN_ATTR}]) #view > hui-view-background {
+		opacity: 0 !important;
+	}
+`;
+
+function getHuiRoot() {
+	try {
+		return getHaPanelLovelace()?.shadowRoot?.querySelector("hui-root");
+	} catch (err) {
+		logger.debug("Failed to get hui-root:", err);
+	}
+	return null;
+}
+
+function ensureUnderlayStyle(root, css) {
+	if (!root || root.getElementById(UNDERLAY_STYLE_ID)) return;
+	const style = document.createElement("style");
+	style.id = UNDERLAY_STYLE_ID;
+	style.textContent = css;
+	root.appendChild(style);
+}
+
+function setUnderlayAttribute(attribute, enabled) {
+	const huiRoot = getHuiRoot();
+	ensureUnderlayStyle(elHaMain?.shadowRoot, UNDERLAY_HA_MAIN_CSS);
+	ensureUnderlayStyle(huiRoot?.shadowRoot, UNDERLAY_HUI_ROOT_CSS);
+	[elHaMain, huiRoot].forEach((element) => {
+		if (element) element.toggleAttribute(attribute, enabled);
+	});
+}
+
+function setUnderlayFadeDuration(property, seconds) {
+	if (!elHaMain || seconds === undefined) return;
+	elHaMain.style.setProperty(property, `${Math.max(0, Math.round(seconds * 1000))}ms`);
+}
+
+// Fade HA's own panel / view backgrounds out (hidden=true) or back in.
+function setUnderlayBackgroundHidden(hidden, fadeTime) {
+	setUnderlayFadeDuration(UNDERLAY_BACKGROUND_FADE_PROPERTY, fadeTime);
+	setUnderlayAttribute(UNDERLAY_BACKGROUND_HIDDEN_ATTR, hidden);
+}
+
+// Sections (hui-section elements) that take part in the underlay fade: those whose
+// visibility conditions reference screensaver_entity, unless overridden per section
+// with `wallpanel_fade: true|false`.
+function getUnderlayFadeSections() {
+	const entity = config.screensaver_entity;
+	const huiRoot = getHuiRoot();
+	if (!huiRoot || !huiRoot.shadowRoot) return [];
+	const sections = [];
+	huiRoot.shadowRoot.querySelectorAll("hui-sections-view").forEach((sectionsView) => {
+		if (!sectionsView.shadowRoot) return;
+		sectionsView.shadowRoot.querySelectorAll("hui-section").forEach((section) => {
+			const sectionConfig = section.config || {};
+			if (sectionConfig.wallpanel_fade === false) return;
+			if (
+				sectionConfig.wallpanel_fade === true ||
+				(entity && JSON.stringify(sectionConfig.visibility || []).includes(entity))
+			) {
+				sections.push(section);
+			}
+		});
+	});
+	return sections;
+}
+
+function setSectionsOpacity(sections, opacity, fadeTime) {
+	const transition = fadeTime > 0 ? `opacity ${Math.round(fadeTime * 1000)}ms ease-in-out` : "";
+	sections.forEach((section) => {
+		section.style.transition = transition;
+		section.style.opacity = String(opacity);
+	});
+}
+
+function clearSectionsFade(sections) {
+	sections.forEach((section) => {
+		section.style.removeProperty("transition");
+		section.style.removeProperty("opacity");
+	});
+}
+
+function sleep(seconds) {
+	return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(seconds * 1000))));
+}
+
+function nextAnimationFrames(count = 2) {
+	return new Promise((resolve) => {
+		const step = (remaining) => {
+			if (remaining <= 0) {
+				resolve();
+				return;
+			}
+			requestAnimationFrame(() => step(remaining - 1));
+		};
+		step(count);
+	});
+}
+
+function applyUnderlayContainerStyle() {
+	if (!wallpanelContainer) return;
+	const properties = ["position", "top", "right", "bottom", "left", "z-index"];
+	if (config.screensaver_underlay) {
+		wallpanelContainer.style.position = "fixed";
+		wallpanelContainer.style.top = "0";
+		wallpanelContainer.style.right = "0";
+		wallpanelContainer.style.bottom = "0";
+		wallpanelContainer.style.left = "0";
+		wallpanelContainer.style.zIndex = UNDERLAY_Z_INDEX;
+		if (elHaMain) elHaMain.style.display = "block";
+	} else {
+		properties.forEach((property) => wallpanelContainer.style.removeProperty(property));
+		if (elHaMain) elHaMain.style.removeProperty("display");
+	}
+}
+
 function getDashboardWallpanelConfig(keys = []) {
 	const pl = getHaPanelLovelace();
 	const conf = {};
@@ -1715,7 +1867,7 @@ function initWallpanel() {
 			} else if (command == "toggle_pause") {
 				this.togglePlayPause();
 			} else if (command == "stop") {
-				this.stopScreensaver();
+				this.stopScreensaver(config.fade_out_time_screensaver_entity);
 			} else {
 				logger.warn(`Unknown command "${command}" in ${config.command_entity}`);
 			}
@@ -4645,24 +4797,6 @@ function initWallpanel() {
 			// don't briefly show a scrollbar during the transition.
 			document.documentElement.style.overflow = "hidden";
 
-			// In underlay mode, set entity state and navigate immediately so the
-			// dashboard is in the correct state before the wallpanel image fades in.
-			if (config.screensaver_underlay) {
-				this.setScreensaverEntityState();
-				if (config.screensaver_start_navigation_path) {
-					skipDisableScreensaverOnLocationChanged = true;
-					navigate(config.screensaver_start_navigation_path);
-					setTimeout(() => {
-						skipDisableScreensaverOnLocationChanged = false;
-					}, 5000);
-				}
-				if (config.screensaver_stop_close_browser_mod_popup) {
-					getActiveBrowserModPopups().forEach((popup) => {
-						popup.closeDialog();
-					});
-				}
-			}
-
 			const activeElement = this.getActiveMediaElement();
 			if (activeElement == this.imageOne) {
 				this.imageOneContainer.style.opacity = 1;
@@ -4676,6 +4810,17 @@ function initWallpanel() {
 			await this.switchActiveMedia("start");
 			if (!this.screensaverRunning() || this.screensaverSessionId !== screensaverSessionId) {
 				return;
+			}
+			if (config.screensaver_underlay) {
+				// Start revealing the media (HA's backgrounds fade out over it) while the
+				// sections tied to screensaver_entity fade out, then switch the dashboard to
+				// its screensaver state and fade the new sections in. Overlapping the two
+				// avoids a pause while the entity change round-trips through Home Assistant.
+				this.showUnderlayMedia(screensaverSessionId);
+				const switched = await this.runUnderlaySwitch(true, config.screensaver_underlay_content_fade_time);
+				if (!switched || !this.screensaverRunning() || this.screensaverSessionId !== screensaverSessionId) {
+					return;
+				}
 			}
 			this.setupScreensaver();
 
@@ -4706,17 +4851,13 @@ function initWallpanel() {
 
 			this.createInfoBoxContent();
 
-			if (config.screensaver_underlay) {
-				// Container is permanently positioned at z-index:-1 (set at init).
-				// Just make pointer-events transparent so card clicks pass through.
-				this.style.pointerEvents = "none";
-			} else {
+			if (!config.screensaver_underlay) {
+				// In underlay mode the media was already shown by showUnderlayMedia().
 				this.style.zIndex = config.z_index;
 				this.style.pointerEvents = "auto";
+				this.style.visibility = "visible";
+				this.style.opacity = 1;
 			}
-
-			this.style.visibility = "visible";
-			this.style.opacity = 1;
 
 			if (!config.screensaver_underlay) {
 				this.setScreensaverEntityState();
@@ -4743,6 +4884,110 @@ function initWallpanel() {
 			}
 		}
 
+		isScreensaverEntityState(state) {
+			const entity = config.screensaver_entity;
+			return Boolean(entity && this.__hass && this.__hass.states[entity]?.state === state);
+		}
+
+		async waitForScreensaverEntityState(state, timeout = 3.0) {
+			const entity = config.screensaver_entity;
+			if (!entity || !this.__hass || !this.__hass.states[entity]) return;
+			const until = Date.now() + timeout * 1000;
+			while (!this.isScreensaverEntityState(state)) {
+				if (Date.now() >= until) {
+					logger.warning(`Timed out waiting for ${entity} to become ${state}`);
+					return;
+				}
+
+				await sleep(0.05);
+			}
+		}
+
+		// Switch the dashboard between its normal and screensaver state (underlay mode)
+		// and wait until Home Assistant has rendered the change.
+		async applyUnderlayDashboardState(screensaverActive) {
+			this.setScreensaverEntityState();
+			if (screensaverActive) {
+				if (config.screensaver_start_navigation_path) {
+					skipDisableScreensaverOnLocationChanged = true;
+					navigate(config.screensaver_start_navigation_path);
+					setTimeout(() => {
+						skipDisableScreensaverOnLocationChanged = false;
+					}, 5000);
+				}
+				if (config.screensaver_stop_close_browser_mod_popup) {
+					getActiveBrowserModPopups().forEach((popup) => {
+						popup.closeDialog();
+					});
+				}
+			}
+			await this.waitForScreensaverEntityState(screensaverActive ? "on" : "off");
+			await sleep(config.screensaver_underlay_render_delay);
+			await nextAnimationFrames();
+		}
+
+		// Underlay mode: show the media at full opacity below the dashboard (pointer events
+		// pass through to the cards) and fade HA's backgrounds out over it.
+		showUnderlayMedia(screensaverSessionId) {
+			applyUnderlayContainerStyle();
+			this.style.pointerEvents = "none";
+			this.style.transition = "";
+			this.style.visibility = "visible";
+			this.style.opacity = 1;
+			setUnderlayBackgroundHidden(true, config.fade_in_time);
+			// A view or dashboard change can replace hui-root, so apply the state again
+			// once the fade-in has finished.
+			setTimeout(
+				() => {
+					if (this.screensaverRunning() && this.screensaverSessionId === screensaverSessionId) {
+						setUnderlayBackgroundHidden(true);
+					}
+				},
+				(config.fade_in_time + 1) * 1000
+			);
+		}
+
+		// Underlay mode: fade the sections tied to screensaver_entity out, switch the
+		// dashboard state (screensaver_entity / navigation), call onSwitched and fade the
+		// tied sections that are now shown back in. Other sections are left untouched.
+		// Returns false if a newer switch superseded this one.
+		async runUnderlaySwitch(screensaverActive, fadeTime, onSwitched = null) {
+			const sequenceId = (this.underlaySequenceId = (this.underlaySequenceId || 0) + 1);
+			const isCurrent = () => this.underlaySequenceId === sequenceId;
+			fadeTime = Math.max(0, Number(fadeTime) || 0);
+			// If screensaver_entity was switched externally, HA has already re-rendered the
+			// dashboard, so there is nothing left to fade.
+			const alreadySwitched = this.isScreensaverEntityState(screensaverActive ? "on" : "off");
+			const fade = fadeTime > 0 && !alreadySwitched;
+
+			let sectionsBefore = [];
+			if (fade) {
+				sectionsBefore = getUnderlayFadeSections();
+				setSectionsOpacity(sectionsBefore, 0, fadeTime);
+				await sleep(fadeTime);
+				if (!isCurrent()) return false;
+			}
+
+			await this.applyUnderlayDashboardState(screensaverActive);
+			if (!isCurrent()) return false;
+			if (onSwitched) onSwitched();
+
+			const sectionsAfter = getUnderlayFadeSections();
+			if (fade) {
+				// Sections created by the switch (e.g. after navigation) start invisible too.
+				sectionsAfter
+					.filter((section) => !sectionsBefore.includes(section))
+					.forEach((section) => setSectionsOpacity([section], 0, 0));
+				await nextAnimationFrames(1);
+				if (!isCurrent()) return false;
+				setSectionsOpacity(sectionsAfter, 1, fadeTime);
+				await sleep(fadeTime);
+				if (!isCurrent()) return false;
+			}
+			clearSectionsFade(sectionsAfter);
+			return true;
+		}
+
 		screensaverRunning() {
 			return Boolean(this.screensaverStartedAt) && this.screensaverStartedAt > 0;
 		}
@@ -4750,6 +4995,7 @@ function initWallpanel() {
 		// API for use with Browser Mod.
 		stopScreensaver(fadeOutTime = 0.0) {
 			logger.debug("Stop screensaver");
+			const wasRunning = this.screensaverRunning();
 
 			if (this.afterFadeoutTimer) {
 				clearTimeout(this.afterFadeoutTimer);
@@ -4760,9 +5006,12 @@ function initWallpanel() {
 			this.screensaverStoppedAt = Date.now();
 
 			if (fadeOutTime > 0) {
-				setTimeout(() => {
-					document.documentElement.style.removeProperty("overflow");
-				}, Math.round(fadeOutTime * 1000));
+				setTimeout(
+					() => {
+						document.documentElement.style.removeProperty("overflow");
+					},
+					Math.round(fadeOutTime * 1000)
+				);
 			} else {
 				document.documentElement.style.removeProperty("overflow");
 			}
@@ -4773,13 +5022,27 @@ function initWallpanel() {
 			hideAllMessages();
 
 			this.debugBox.style.pointerEvents = "none";
-			if (fadeOutTime > 0) {
-				this.style.transition = `opacity ${Math.round(fadeOutTime * 1000)}ms ease-in-out`;
+			const underlay = config.screensaver_underlay;
+			if (underlay && wasRunning) {
+				// Keep the media visible below the dashboard while HA's backgrounds fade
+				// back in over it. It is hidden once the fade-out has finished.
+				setUnderlayBackgroundHidden(false, fadeOutTime);
+				// Swap the tied sections back with a fade no longer than the media fade-out.
+				const contentFadeTime =
+					fadeOutTime > 0 ? Math.min(Math.max(0, config.screensaver_underlay_content_fade_time), fadeOutTime) : 0;
+				this.runUnderlaySwitch(false, contentFadeTime);
 			} else {
-				this.style.transition = "";
+				if (underlay) {
+					setUnderlayBackgroundHidden(false, 0);
+				}
+				if (fadeOutTime > 0) {
+					this.style.transition = `opacity ${Math.round(fadeOutTime * 1000)}ms ease-in-out`;
+				} else {
+					this.style.transition = "";
+				}
+				this.style.opacity = 0;
+				this.style.visibility = "hidden";
 			}
-			this.style.opacity = 0;
-			this.style.visibility = "hidden";
 			this.style.pointerEvents = "none";
 			this.style.zIndex = config.z_index;
 			this.imageOneInfo.style.pointerEvents = "none";
@@ -4797,13 +5060,22 @@ function initWallpanel() {
 				function () {
 					wp.afterFadeoutTimer = null;
 					if (!wp.screensaverRunning()) {
+						if (underlay) {
+							// HA's backgrounds have faded back in over the media by now.
+							wp.style.transition = "";
+							wp.style.opacity = 0;
+							wp.style.visibility = "hidden";
+						}
 						wp.releaseAllMedia();
 					}
 				},
 				Math.round(fadeOutTime * 1000)
 			);
 
-			setTimeout(this.setScreensaverEntityState.bind(this), 25);
+			if (!(underlay && wasRunning)) {
+				// In underlay mode the entity is switched by runUnderlaySwitch.
+				setTimeout(this.setScreensaverEntityState.bind(this), 25);
+			}
 		}
 
 		updateScreensaver() {
@@ -5268,10 +5540,7 @@ function initWallpanel() {
 	}
 	wallpanelContainer = document.createElement("wallpanel-view-container");
 	wallpanel = document.createElement("wallpanel-view");
-	if (config.screensaver_underlay) {
-		wallpanelContainer.style.position = "absolute";
-		wallpanelContainer.style.zIndex = -1;
-	}
+	applyUnderlayContainerStyle();
 	wallpanelContainer.appendChild(wallpanel);
 	elHaMain.shadowRoot.appendChild(wallpanelContainer);
 }
