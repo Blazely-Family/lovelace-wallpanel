@@ -70,7 +70,10 @@ Each section of a sections view is in one of three states:
 The switching is done by Home Assistant's own visibility logic. WallPanel answers the media query
 `(wallpanel-screensaver)` itself: it matches while the screensaver runs. For default sections, WallPanel adds
 `not screen (wallpanel-screensaver)` to the visibility conditions it hands to the section (your stored dashboard
-configuration is not changed). Sections keep their other visibility conditions, and edit mode shows every section.
+configuration is not changed). For sections shown only during the screensaver, it hands over the `screen` condition
+wrapped in an equivalent `and` condition, so that Home Assistant subscribes it to WallPanel's media query even if the
+section was rendered before WallPanel loaded. Sections keep their other visibility conditions, and edit mode shows
+every section.
 
 Without WallPanel the media query does not match, so sections show their normal (screensaver off) state.
 `wallpanel_screensaver: only` also marks a section as visible only during the screensaver, but because WallPanel adds

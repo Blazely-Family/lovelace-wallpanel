@@ -22,6 +22,7 @@ const underlay = new Function(
 
 const SHOW = { condition: "screen", media_query: "(wallpanel-screensaver)" };
 const HIDE = { condition: "not", conditions: [SHOW] };
+const ONLY = { condition: "and", conditions: [SHOW] };
 const freeze = (value) => {
 	Object.values(value).forEach((child) => {
 		if (child && typeof child === "object") freeze(child);
@@ -35,6 +36,8 @@ test("section roles", () => {
 	assert.equal(role({ type: "grid", wallpanel_screensaver: "show" }), "always");
 	assert.equal(role({ type: "grid", wallpanel_screensaver: "only" }), "only");
 	assert.equal(role({ type: "grid", visibility: [SHOW] }), "only");
+	assert.equal(role({ type: "grid", visibility: [ONLY] }), "only");
+	assert.equal(role({ type: "grid", visibility: [{ condition: "and", conditions: [SHOW, SHOW] }] }), "default");
 	assert.equal(role({ visibility: [{ condition: "screen", media_query: "  (WallPanel-Screensaver) " }] }), "only");
 	assert.equal(role({ visibility: [HIDE] }), "default");
 	assert.equal(role({ visibility: [{ condition: "screen", media_query: "(max-width: 600px)" }] }), "default");
@@ -62,16 +65,25 @@ test("adding the rule is idempotent", () => {
 	assert.equal(underlay.withUnderlayVisibility(explicit), explicit);
 });
 
-test("always and native only sections are not changed", () => {
+test("always sections are not changed", () => {
 	const always = { type: "grid", wallpanel_screensaver: "show", visibility: [{ condition: "user", users: ["x"] }] };
 	assert.equal(underlay.withUnderlayVisibility(always), always);
-	const only = { type: "grid", visibility: [SHOW] };
-	assert.equal(underlay.withUnderlayVisibility(only), only);
 });
 
-test("only sections marked by key get the show rule", () => {
+test("the screen condition of only sections is replaced by an equivalent one", () => {
+	// A content change makes Home Assistant subscribe the conditions again.
+	const user = { condition: "user", users: ["x"] };
+	const original = freeze({ type: "grid", visibility: [user, SHOW] });
+	const result = underlay.withUnderlayVisibility(original);
+	assert.notEqual(result, original);
+	assert.deepEqual(result.visibility, [user, ONLY]);
+	assert.equal(underlay.getUnderlaySectionRole(result), "only");
+	assert.equal(underlay.withUnderlayVisibility(result), result);
+});
+
+test("only sections marked by key get the only rule", () => {
 	const result = underlay.withUnderlayVisibility({ type: "grid", wallpanel_screensaver: "only" });
-	assert.deepEqual(result.visibility, [SHOW]);
+	assert.deepEqual(result.visibility, [ONLY]);
 });
 
 test("strategy sections and non-objects are passed through", () => {
@@ -158,14 +170,29 @@ test("the same original config always maps to the same converted object", () => 
 	assert.equal(a.config, converted);
 });
 
-test("unchanged configs are passed through as is", () => {
+test("unchanged configs are passed through as is but remembered", () => {
 	const Section = sectionClass();
 	const hook = underlay.installUnderlaySectionConfigHook(Section, underlay.withUnderlayVisibility);
 	const always = { type: "grid", wallpanel_screensaver: "show" };
 	const section = new Section();
+	assert.equal(hook.isConverted(always), false);
 	section.config = always;
 	assert.equal(section.config, always);
-	assert.equal(hook.isConverted(always), false);
+	assert.equal(hook.isConverted(always), true);
+	assert.equal(hook.originalOf(always), always);
+});
+
+test("a copy of a config set before the hook is converted when assigned", () => {
+	const Section = sectionClass();
+	const section = new Section();
+	const original = Object.freeze({ type: "grid" });
+	section.config = original;
+	const hook = underlay.installUnderlaySectionConfigHook(Section, underlay.withUnderlayVisibility);
+	assert.equal(hook.isConverted(section.config), false);
+	section.config = { ...section.config };
+	assert.equal(hook.isConverted(section.config), true);
+	assert.deepEqual(section.config.visibility, [HIDE]);
+	assert.equal(section.assignments, 2);
 });
 
 test("the hook is installed once and only on a configurable accessor", () => {

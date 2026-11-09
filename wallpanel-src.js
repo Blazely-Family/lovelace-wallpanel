@@ -3,7 +3,7 @@
  * Released under the GNU General Public License v3.0
  */
 
-const version = "4.68.0-blazely.3";
+const version = "4.68.0-blazely.4";
 const mediaLoadRetryDelay = 1000;
 const mediaListRetryDelay = 3000;
 const mediaListRateLimitRetryDelay = 60000;
@@ -1385,6 +1385,14 @@ const UNDERLAY_HIDE_DURING_SCREENSAVER = Object.freeze({
 	condition: "not",
 	conditions: Object.freeze([UNDERLAY_SHOW_DURING_SCREENSAVER])
 });
+// Home Assistant only subscribes a section's conditions again when their content
+// changes. A section that already had the plain `screen` condition when it was first
+// rendered (before WallPanel loaded) would keep listening to the browser's media query,
+// so WallPanel replaces that condition with this equivalent one.
+const UNDERLAY_ONLY_DURING_SCREENSAVER = Object.freeze({
+	condition: "and",
+	conditions: Object.freeze([UNDERLAY_SHOW_DURING_SCREENSAVER])
+});
 
 function isUnderlayMediaQuery(query) {
 	return typeof query === "string" && query.trim().toLowerCase() === UNDERLAY_MEDIA_QUERY;
@@ -1402,6 +1410,15 @@ function isUnderlayNotScreenCondition(condition) {
 	);
 }
 
+function isUnderlayOnlyCondition(condition) {
+	return (
+		Boolean(condition) &&
+		condition.condition === "and" &&
+		[].concat(condition.conditions || []).length === 1 &&
+		isUnderlayScreenCondition([].concat(condition.conditions)[0])
+	);
+}
+
 // "always": visible whether or not the screensaver runs,
 // "only": visible only while the screensaver runs,
 // "default": hidden while the screensaver runs.
@@ -1410,11 +1427,11 @@ function getUnderlaySectionRole(sectionConfig) {
 	if (role === "show") return "always";
 	if (role === "only") return "only";
 	const visibility = Array.isArray(sectionConfig?.visibility) ? sectionConfig.visibility : [];
-	return visibility.some(isUnderlayScreenCondition) ? "only" : "default";
+	return visibility.some((c) => isUnderlayScreenCondition(c) || isUnderlayOnlyCondition(c)) ? "only" : "default";
 }
 
 // Returns the section config with the screensaver visibility rule added (a copy), or
-// the same object if nothing needs to be added.
+// the same object if nothing needs to be changed.
 function withUnderlayVisibility(sectionConfig) {
 	if (!sectionConfig || typeof sectionConfig !== "object" || sectionConfig.strategy) return sectionConfig;
 	const visibility = Array.isArray(sectionConfig.visibility) ? sectionConfig.visibility : [];
@@ -1422,8 +1439,9 @@ function withUnderlayVisibility(sectionConfig) {
 	if (role === "default" && !visibility.some(isUnderlayNotScreenCondition)) {
 		return { ...sectionConfig, visibility: [...visibility, UNDERLAY_HIDE_DURING_SCREENSAVER] };
 	}
-	if (role === "only" && !visibility.some(isUnderlayScreenCondition)) {
-		return { ...sectionConfig, visibility: [...visibility, UNDERLAY_SHOW_DURING_SCREENSAVER] };
+	if (role === "only" && !visibility.some(isUnderlayOnlyCondition)) {
+		const otherConditions = visibility.filter((c) => !isUnderlayScreenCondition(c));
+		return { ...sectionConfig, visibility: [...otherConditions, UNDERLAY_ONLY_DURING_SCREENSAVER] };
 	}
 	return sectionConfig;
 }
@@ -1476,7 +1494,8 @@ function installUnderlayMatchMedia(win, underlayMediaQuery) {
 }
 
 // Wraps the `config` property of HA's section element so every section receives
-// transform(config) instead of config. Returns null if the property cannot be wrapped.
+// transform(config) instead of config. isConverted(config) is true for every config that
+// passed through the hook (changed or not). Returns null if the property cannot be wrapped.
 function installUnderlaySectionConfigHook(sectionClass, transform) {
 	let proto = sectionClass ? sectionClass.prototype : null;
 	let descriptor;
@@ -1492,10 +1511,8 @@ function installUnderlaySectionConfigHook(sectionClass, transform) {
 		if (!value || typeof value !== "object" || originals.has(value)) return value;
 		if (converted.has(value)) return converted.get(value);
 		const result = transform(value);
-		if (result !== value) {
-			converted.set(value, result);
-			originals.set(result, value);
-		}
+		converted.set(value, result);
+		originals.set(result, value);
 		return result;
 	};
 	const set = function (value) {
@@ -1557,16 +1574,18 @@ function getUnderlaySwitchedSections() {
 	});
 }
 
-// Give sections that were rendered before the config hook was installed their
-// visibility rule. Home Assistant rebuilds a section when its config changes, which can
-// shift the layout, so this is done when WallPanel starts rather than in a transition.
+// Sections rendered before WallPanel loaded subscribed their `screen` conditions to the
+// browser's own media query (which never changes) and did not get the visibility rule.
+// Hand them a new copy of their config: Home Assistant rebuilds the section, subscribes
+// its conditions again (now to WallPanel's media query) and the hook adds the rule.
+// The rebuild can shift the layout, so this is done when WallPanel starts rather than in
+// a transition.
 function prepareUnderlaySections(sections = getUnderlaySwitchedSections()) {
 	if (!underlaySectionHook) return;
 	sections.forEach((section) => {
 		const sectionConfig = section.config;
 		if (!sectionConfig || underlaySectionHook.isConverted(sectionConfig)) return;
-		const convertedConfig = underlaySectionHook.convert(sectionConfig);
-		if (convertedConfig !== sectionConfig) section.config = convertedConfig;
+		section.config = { ...sectionConfig };
 	});
 }
 
