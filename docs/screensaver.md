@@ -87,6 +87,17 @@ loads), also give it the condition natively:
   cards: ...
 ```
 
+The view footer follows the same rule: put `wallpanel_screensaver: show` or `wallpanel_screensaver: only` in the
+view's `footer` configuration, or leave it out to hide the footer while the screensaver runs. The footer is faded
+with opacity, so the layout does not change.
+
+```yaml
+footer:
+  wallpanel_screensaver: show
+  card:
+    type: custom:navbar-card
+```
+
 `screensaver_entity` is optional in underlay mode. It still reflects and controls the screensaver state, for example
 for automations, but the dashboard layout no longer depends on it.
 
