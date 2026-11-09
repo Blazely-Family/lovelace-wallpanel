@@ -3,7 +3,7 @@
  * Released under the GNU General Public License v3.0
  */
 
-const version = "4.68.0-blazely.1";
+const version = "4.68.0-blazely.2";
 const mediaLoadRetryDelay = 1000;
 const mediaListRetryDelay = 3000;
 const mediaListRateLimitRetryDelay = 60000;
@@ -28,7 +28,6 @@ const defaultConfig = {
 	z_index: 1000,
 	screensaver_underlay: false,
 	screensaver_underlay_content_fade_time: 0.5,
-	screensaver_underlay_render_delay: 0.1,
 	idle_time: 15,
 	fade_in_time: 3.0,
 	fade_out_time_motion_detected: 1.0,
@@ -1285,23 +1284,39 @@ function getHaPanelLovelace() {
 	}
 }
 
-// Underlay mode layering.
+// ---------------------------------------------------------------------------------
+// Underlay mode (Blazely fork): the screensaver media is shown behind the live
+// dashboard instead of on top of it.
+//
+// Layering
 // Since Home Assistant 2026.11, home-assistant-main is an isolated stacking context
 // that also holds HA's own z-index:-1 layers (the panel background drawn by
 // partial-panel-resolver::before and hui-view-background), plus any card layers at
 // z-index:-1 that are not contained by their card (e.g. theme "glass" ::before layers).
 // The underlay container therefore sits below all of them at z-index:-2.
 // home-assistant-main has no display set, so it is display:inline. Firefox does not
-// build a proper stacking context for an inline element with block children (the
-// inline is split around them), and z-index ordering inside it breaks: the container
-// covered every card without its own positive z-index. Underlay mode therefore makes
-// home-assistant-main display:block, which does not change HA's layout.
+// build a proper stacking context for an inline element with block children, and
+// z-index ordering inside it breaks. Underlay mode therefore makes home-assistant-main
+// display:block, which does not change HA's layout.
 // While the screensaver runs, the media is shown at full opacity underneath and HA's
 // background layers are faded out over it (and faded back in on stop), which looks the
 // same as the media fading in on top of the background.
-// Sections whose visibility depends on screensaver_entity are faded out before the
-// entity is switched and faded in afterwards; other sections are left untouched.
-// A section can opt in or out explicitly with `wallpanel_fade: true|false` in its config.
+//
+// Sections
+// Which sections show during the screensaver is decided by Home Assistant's own
+// visibility logic, using a `screen` condition on the media query
+// "(wallpanel-screensaver)". WallPanel answers that query itself (window.matchMedia)
+// and switches it while the screensaver runs, so HA re-evaluates the sections locally.
+// - Default: hidden while the screensaver runs. WallPanel adds
+//   `not screen (wallpanel-screensaver)` to the section's visibility when HA hands the
+//   section its config (a copy; the stored dashboard config is not changed).
+// - `wallpanel_screensaver: show`: always visible, nothing is added.
+// - Only during the screensaver: give the section the condition
+//   `screen (wallpanel-screensaver)` itself, so HA hides it before WallPanel loads
+//   (`wallpanel_screensaver: only` also works, but can show briefly on page load).
+// Without WallPanel the media query does not match, so sections behave as if the
+// screensaver were off.
+// ---------------------------------------------------------------------------------
 const UNDERLAY_Z_INDEX = -2;
 const UNDERLAY_STYLE_ID = "wallpanel-underlay-style";
 const UNDERLAY_BACKGROUND_HIDDEN_ATTR = "wallpanel-underlay-background-hidden";
@@ -1362,28 +1377,243 @@ function setUnderlayBackgroundHidden(hidden, fadeTime) {
 	setUnderlayAttribute(UNDERLAY_BACKGROUND_HIDDEN_ATTR, hidden);
 }
 
-// Sections (hui-section elements) that take part in the underlay fade: those whose
-// visibility conditions reference screensaver_entity, unless overridden per section
-// with `wallpanel_fade: true|false`.
-function getUnderlayFadeSections() {
-	const entity = config.screensaver_entity;
+// underlay-sections:begin (self-contained, exercised by tests/underlay-sections.test.cjs)
+const UNDERLAY_MEDIA_QUERY = "(wallpanel-screensaver)";
+const UNDERLAY_SECTION_KEY = "wallpanel_screensaver";
+const UNDERLAY_SHOW_DURING_SCREENSAVER = Object.freeze({ condition: "screen", media_query: UNDERLAY_MEDIA_QUERY });
+const UNDERLAY_HIDE_DURING_SCREENSAVER = Object.freeze({
+	condition: "not",
+	conditions: Object.freeze([UNDERLAY_SHOW_DURING_SCREENSAVER])
+});
+
+function isUnderlayMediaQuery(query) {
+	return typeof query === "string" && query.trim().toLowerCase() === UNDERLAY_MEDIA_QUERY;
+}
+
+function isUnderlayScreenCondition(condition) {
+	return Boolean(condition) && condition.condition === "screen" && isUnderlayMediaQuery(condition.media_query);
+}
+
+function isUnderlayNotScreenCondition(condition) {
+	return (
+		Boolean(condition) &&
+		condition.condition === "not" &&
+		[].concat(condition.conditions || []).some(isUnderlayScreenCondition)
+	);
+}
+
+// "always": visible whether or not the screensaver runs,
+// "only": visible only while the screensaver runs,
+// "default": hidden while the screensaver runs.
+function getUnderlaySectionRole(sectionConfig) {
+	const role = sectionConfig ? sectionConfig[UNDERLAY_SECTION_KEY] : undefined;
+	if (role === "show") return "always";
+	if (role === "only") return "only";
+	const visibility = Array.isArray(sectionConfig?.visibility) ? sectionConfig.visibility : [];
+	return visibility.some(isUnderlayScreenCondition) ? "only" : "default";
+}
+
+// Returns the section config with the screensaver visibility rule added (a copy), or
+// the same object if nothing needs to be added.
+function withUnderlayVisibility(sectionConfig) {
+	if (!sectionConfig || typeof sectionConfig !== "object" || sectionConfig.strategy) return sectionConfig;
+	const visibility = Array.isArray(sectionConfig.visibility) ? sectionConfig.visibility : [];
+	const role = getUnderlaySectionRole(sectionConfig);
+	if (role === "default" && !visibility.some(isUnderlayNotScreenCondition)) {
+		return { ...sectionConfig, visibility: [...visibility, UNDERLAY_HIDE_DURING_SCREENSAVER] };
+	}
+	if (role === "only" && !visibility.some(isUnderlayScreenCondition)) {
+		return { ...sectionConfig, visibility: [...visibility, UNDERLAY_SHOW_DURING_SCREENSAVER] };
+	}
+	return sectionConfig;
+}
+
+// A MediaQueryList for UNDERLAY_MEDIA_QUERY whose state WallPanel controls.
+function createUnderlayMediaQuery(EventTargetClass, EventClass) {
+	let matches = false;
+	let onchange = null;
+	const list = new EventTargetClass();
+	Object.defineProperties(list, {
+		media: { value: UNDERLAY_MEDIA_QUERY },
+		matches: { get: () => matches },
+		onchange: {
+			get: () => onchange,
+			set: (handler) => {
+				onchange = handler;
+			}
+		},
+		addListener: { value: (listener) => list.addEventListener("change", listener) },
+		removeListener: { value: (listener) => list.removeEventListener("change", listener) }
+	});
+	return {
+		list,
+		get matches() {
+			return matches;
+		},
+		setMatches(value) {
+			value = Boolean(value);
+			if (value === matches) return false;
+			matches = value;
+			const event = new EventClass("change");
+			Object.defineProperties(event, { matches: { value }, media: { value: UNDERLAY_MEDIA_QUERY } });
+			list.dispatchEvent(event);
+			if (typeof onchange === "function") onchange.call(list, event);
+			return true;
+		}
+	};
+}
+
+// Makes win.matchMedia(UNDERLAY_MEDIA_QUERY) return the controlled MediaQueryList.
+function installUnderlayMatchMedia(win, underlayMediaQuery) {
+	if (!win || typeof win.matchMedia !== "function" || win.matchMedia.wallpanelUnderlay) return false;
+	const originalMatchMedia = win.matchMedia;
+	const matchMedia = function (query) {
+		return isUnderlayMediaQuery(query) ? underlayMediaQuery.list : originalMatchMedia.call(win, query);
+	};
+	matchMedia.wallpanelUnderlay = true;
+	win.matchMedia = matchMedia;
+	return true;
+}
+
+// Wraps the `config` property of HA's section element so every section receives
+// transform(config) instead of config. Returns null if the property cannot be wrapped.
+function installUnderlaySectionConfigHook(sectionClass, transform) {
+	let proto = sectionClass ? sectionClass.prototype : null;
+	let descriptor;
+	while (proto && !descriptor) {
+		descriptor = Object.getOwnPropertyDescriptor(proto, "config");
+		if (!descriptor) proto = Object.getPrototypeOf(proto);
+	}
+	if (!descriptor || !descriptor.configurable || typeof descriptor.get !== "function") return null;
+	if (typeof descriptor.set !== "function" || descriptor.set.wallpanelUnderlay) return null;
+	const originals = new WeakMap();
+	const converted = new WeakMap();
+	const convert = (value) => {
+		if (!value || typeof value !== "object" || originals.has(value)) return value;
+		if (converted.has(value)) return converted.get(value);
+		const result = transform(value);
+		if (result !== value) {
+			converted.set(value, result);
+			originals.set(result, value);
+		}
+		return result;
+	};
+	const set = function (value) {
+		descriptor.set.call(this, convert(value));
+	};
+	set.wallpanelUnderlay = true;
+	Object.defineProperty(proto, "config", {
+		configurable: true,
+		enumerable: descriptor.enumerable,
+		get: descriptor.get,
+		set
+	});
+	return {
+		convert,
+		isConverted: (value) => originals.has(value),
+		originalOf: (value) => originals.get(value) || value
+	};
+}
+// underlay-sections:end
+
+const underlayMediaQuery = createUnderlayMediaQuery(EventTarget, Event);
+let underlaySectionHook = null;
+let underlaySwitchSequence = 0;
+
+function setupUnderlaySections() {
+	installUnderlayMatchMedia(window, underlayMediaQuery);
+	customElements.whenDefined("hui-section").then((sectionClass) => {
+		underlaySectionHook = installUnderlaySectionConfigHook(
+			sectionClass || customElements.get("hui-section"),
+			withUnderlayVisibility
+		);
+		if (!underlaySectionHook) {
+			logger.warning("Cannot hook hui-section config, underlay screensaver sections are disabled");
+		}
+	});
+}
+
+// Install as early as possible, before Home Assistant renders dashboard sections.
+setupUnderlaySections();
+
+function getUnderlaySections() {
 	const huiRoot = getHuiRoot();
-	if (!huiRoot || !huiRoot.shadowRoot) return [];
 	const sections = [];
+	if (!huiRoot || !huiRoot.shadowRoot) return sections;
 	huiRoot.shadowRoot.querySelectorAll("hui-sections-view").forEach((sectionsView) => {
 		if (!sectionsView.shadowRoot) return;
-		sectionsView.shadowRoot.querySelectorAll("hui-section").forEach((section) => {
-			const sectionConfig = section.config || {};
-			if (sectionConfig.wallpanel_fade === false) return;
-			if (
-				sectionConfig.wallpanel_fade === true ||
-				(entity && JSON.stringify(sectionConfig.visibility || []).includes(entity))
-			) {
-				sections.push(section);
-			}
-		});
+		sectionsView.shadowRoot.querySelectorAll("hui-section").forEach((section) => sections.push(section));
 	});
 	return sections;
+}
+
+// Sections whose visibility changes with the screensaver (all but "always").
+function getUnderlaySwitchedSections() {
+	return getUnderlaySections().filter((section) => {
+		const sectionConfig = underlaySectionHook ? underlaySectionHook.originalOf(section.config) : section.config;
+		return getUnderlaySectionRole(sectionConfig) !== "always";
+	});
+}
+
+// Switch the dashboard sections between their normal and screensaver state:
+// fade out the sections that will be hidden, switch the media query (HA re-evaluates the
+// section visibility) and fade in the sections that appeared.
+// Returns false if a newer switch or isCurrent() superseded this one.
+async function switchUnderlaySections(screensaverActive, fadeTime, isCurrent = () => true) {
+	const sequence = ++underlaySwitchSequence;
+	const current = () => sequence === underlaySwitchSequence && isCurrent();
+	fadeTime = Math.max(0, Number(fadeTime) || 0);
+	const before = getUnderlaySwitchedSections();
+	if (underlayMediaQuery.matches === Boolean(screensaverActive)) {
+		clearSectionsFade(before);
+		return current();
+	}
+
+	if (fadeTime > 0) {
+		setSectionsOpacity(
+			before.filter((section) => !section.hidden),
+			0,
+			fadeTime
+		);
+		await sleep(fadeTime);
+		if (!current()) return false;
+	}
+
+	// Sections that were rendered before the config hook was installed get their
+	// visibility rule now (they are hidden or faded out at this point).
+	if (underlaySectionHook) {
+		before.forEach((section) => {
+			const sectionConfig = section.config;
+			if (!sectionConfig || underlaySectionHook.isConverted(sectionConfig)) return;
+			const convertedConfig = underlaySectionHook.convert(sectionConfig);
+			if (convertedConfig !== sectionConfig) section.config = convertedConfig;
+		});
+	}
+
+	const hiddenBefore = before.filter((section) => section.hidden);
+	if (fadeTime > 0) setSectionsOpacity(hiddenBefore, 0, 0);
+	underlayMediaQuery.setMatches(screensaverActive);
+	await nextAnimationFrames(2);
+	if (!current()) return false;
+
+	const after = getUnderlaySwitchedSections();
+	if (fadeTime > 0) {
+		const appeared = after.filter(
+			(section) => !section.hidden && (hiddenBefore.includes(section) || !before.includes(section))
+		);
+		setSectionsOpacity(
+			appeared.filter((section) => !before.includes(section)),
+			0,
+			0
+		);
+		await nextAnimationFrames(1);
+		if (!current()) return false;
+		setSectionsOpacity(appeared, 1, fadeTime);
+		await sleep(fadeTime);
+		if (!current()) return false;
+	}
+	clearSectionsFade(after);
+	return true;
 }
 
 function setSectionsOpacity(sections, opacity, fadeTime) {
@@ -4812,15 +5042,32 @@ function initWallpanel() {
 				return;
 			}
 			if (config.screensaver_underlay) {
-				// Start revealing the media (HA's backgrounds fade out over it) while the
-				// sections tied to screensaver_entity fade out, then switch the dashboard to
-				// its screensaver state and fade the new sections in. Overlapping the two
-				// avoids a pause while the entity change round-trips through Home Assistant.
-				this.showUnderlayMedia(screensaverSessionId);
-				const switched = await this.runUnderlaySwitch(true, config.screensaver_underlay_content_fade_time);
-				if (!switched || !this.screensaverRunning() || this.screensaverSessionId !== screensaverSessionId) {
-					return;
+				const isCurrentSession = () => this.screensaverRunning() && this.screensaverSessionId === screensaverSessionId;
+				// Navigate first, so that the sections of the screensaver view are switched.
+				if (config.screensaver_start_navigation_path) {
+					skipDisableScreensaverOnLocationChanged = true;
+					navigate(config.screensaver_start_navigation_path);
+					setTimeout(() => {
+						skipDisableScreensaverOnLocationChanged = false;
+					}, 5000);
+					await nextAnimationFrames(2);
+					if (!isCurrentSession()) return;
 				}
+				if (config.screensaver_stop_close_browser_mod_popup) {
+					getActiveBrowserModPopups().forEach((popup) => {
+						popup.closeDialog();
+					});
+				}
+				this.setScreensaverEntityState();
+				// Reveal the media (HA's backgrounds fade out over it) while the dashboard
+				// sections are switched to their screensaver state.
+				this.showUnderlayMedia(screensaverSessionId);
+				const switched = await switchUnderlaySections(
+					true,
+					config.screensaver_underlay_content_fade_time,
+					isCurrentSession
+				);
+				if (!switched) return;
 			}
 			this.setupScreensaver();
 
@@ -4884,48 +5131,6 @@ function initWallpanel() {
 			}
 		}
 
-		isScreensaverEntityState(state) {
-			const entity = config.screensaver_entity;
-			return Boolean(entity && this.__hass && this.__hass.states[entity]?.state === state);
-		}
-
-		async waitForScreensaverEntityState(state, timeout = 3.0) {
-			const entity = config.screensaver_entity;
-			if (!entity || !this.__hass || !this.__hass.states[entity]) return;
-			const until = Date.now() + timeout * 1000;
-			while (!this.isScreensaverEntityState(state)) {
-				if (Date.now() >= until) {
-					logger.warning(`Timed out waiting for ${entity} to become ${state}`);
-					return;
-				}
-
-				await sleep(0.05);
-			}
-		}
-
-		// Switch the dashboard between its normal and screensaver state (underlay mode)
-		// and wait until Home Assistant has rendered the change.
-		async applyUnderlayDashboardState(screensaverActive) {
-			this.setScreensaverEntityState();
-			if (screensaverActive) {
-				if (config.screensaver_start_navigation_path) {
-					skipDisableScreensaverOnLocationChanged = true;
-					navigate(config.screensaver_start_navigation_path);
-					setTimeout(() => {
-						skipDisableScreensaverOnLocationChanged = false;
-					}, 5000);
-				}
-				if (config.screensaver_stop_close_browser_mod_popup) {
-					getActiveBrowserModPopups().forEach((popup) => {
-						popup.closeDialog();
-					});
-				}
-			}
-			await this.waitForScreensaverEntityState(screensaverActive ? "on" : "off");
-			await sleep(config.screensaver_underlay_render_delay);
-			await nextAnimationFrames();
-		}
-
 		// Underlay mode: show the media at full opacity below the dashboard (pointer events
 		// pass through to the cards) and fade HA's backgrounds out over it.
 		showUnderlayMedia(screensaverSessionId) {
@@ -4945,47 +5150,6 @@ function initWallpanel() {
 				},
 				(config.fade_in_time + 1) * 1000
 			);
-		}
-
-		// Underlay mode: fade the sections tied to screensaver_entity out, switch the
-		// dashboard state (screensaver_entity / navigation), call onSwitched and fade the
-		// tied sections that are now shown back in. Other sections are left untouched.
-		// Returns false if a newer switch superseded this one.
-		async runUnderlaySwitch(screensaverActive, fadeTime, onSwitched = null) {
-			const sequenceId = (this.underlaySequenceId = (this.underlaySequenceId || 0) + 1);
-			const isCurrent = () => this.underlaySequenceId === sequenceId;
-			fadeTime = Math.max(0, Number(fadeTime) || 0);
-			// If screensaver_entity was switched externally, HA has already re-rendered the
-			// dashboard, so there is nothing left to fade.
-			const alreadySwitched = this.isScreensaverEntityState(screensaverActive ? "on" : "off");
-			const fade = fadeTime > 0 && !alreadySwitched;
-
-			let sectionsBefore = [];
-			if (fade) {
-				sectionsBefore = getUnderlayFadeSections();
-				setSectionsOpacity(sectionsBefore, 0, fadeTime);
-				await sleep(fadeTime);
-				if (!isCurrent()) return false;
-			}
-
-			await this.applyUnderlayDashboardState(screensaverActive);
-			if (!isCurrent()) return false;
-			if (onSwitched) onSwitched();
-
-			const sectionsAfter = getUnderlayFadeSections();
-			if (fade) {
-				// Sections created by the switch (e.g. after navigation) start invisible too.
-				sectionsAfter
-					.filter((section) => !sectionsBefore.includes(section))
-					.forEach((section) => setSectionsOpacity([section], 0, 0));
-				await nextAnimationFrames(1);
-				if (!isCurrent()) return false;
-				setSectionsOpacity(sectionsAfter, 1, fadeTime);
-				await sleep(fadeTime);
-				if (!isCurrent()) return false;
-			}
-			clearSectionsFade(sectionsAfter);
-			return true;
 		}
 
 		screensaverRunning() {
@@ -5027,13 +5191,14 @@ function initWallpanel() {
 				// Keep the media visible below the dashboard while HA's backgrounds fade
 				// back in over it. It is hidden once the fade-out has finished.
 				setUnderlayBackgroundHidden(false, fadeOutTime);
-				// Swap the tied sections back with a fade no longer than the media fade-out.
+				// Switch the sections back with a fade no longer than the media fade-out.
 				const contentFadeTime =
 					fadeOutTime > 0 ? Math.min(Math.max(0, config.screensaver_underlay_content_fade_time), fadeOutTime) : 0;
-				this.runUnderlaySwitch(false, contentFadeTime);
+				switchUnderlaySections(false, contentFadeTime, () => !this.screensaverRunning());
 			} else {
 				if (underlay) {
 					setUnderlayBackgroundHidden(false, 0);
+					switchUnderlaySections(false, 0);
 				}
 				if (fadeOutTime > 0) {
 					this.style.transition = `opacity ${Math.round(fadeOutTime * 1000)}ms ease-in-out`;
@@ -5072,10 +5237,7 @@ function initWallpanel() {
 				Math.round(fadeOutTime * 1000)
 			);
 
-			if (!(underlay && wasRunning)) {
-				// In underlay mode the entity is switched by runUnderlaySwitch.
-				setTimeout(this.setScreensaverEntityState.bind(this), 25);
-			}
+			setTimeout(this.setScreensaverEntityState.bind(this), 25);
 		}
 
 		updateScreensaver() {

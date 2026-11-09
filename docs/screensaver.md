@@ -36,37 +36,58 @@ wallpanel:
 ## Underlay mode (Blazely fork)
 With `screensaver_underlay: true` the screensaver media is shown **behind** the live dashboard instead of covering it,
 so cards stay visible and interactive on top of the slideshow.
-Combine it with `screensaver_entity` and section visibility conditions to choose which sections are shown while the screensaver runs:
 
 ```yaml
 wallpanel:
   enabled: true
   screensaver_underlay: true
-  screensaver_entity: input_boolean.kitchen_panel_screensaver
   screensaver_start_navigation_path: /home-panel/kitchen
 ```
 
+### Sections during the screensaver
+Each section of a sections view is in one of three states:
+
+| State | Section configuration |
+| ----- | --------------------- |
+| Hidden while the screensaver runs *(default)* | nothing |
+| Always visible | `wallpanel_screensaver: show` |
+| Visible only while the screensaver runs | a `screen` visibility condition on `(wallpanel-screensaver)` |
+
 ```yaml
-# A section that is only shown while the screensaver is running
+# Always visible (e.g. a clock)
+- type: grid
+  wallpanel_screensaver: show
+  cards: ...
+
+# Visible only while the screensaver runs
 - type: grid
   visibility:
-    - condition: state
-      entity: input_boolean.kitchen_panel_screensaver
-      state: "on"
+    - condition: screen
+      media_query: "(wallpanel-screensaver)"
   cards: ...
 ```
 
-How the transitions work:
+The switching is done by Home Assistant's own visibility logic. WallPanel answers the media query
+`(wallpanel-screensaver)` itself: it matches while the screensaver runs. For default sections, WallPanel adds
+`not screen (wallpanel-screensaver)` to the visibility conditions it hands to the section (your stored dashboard
+configuration is not changed). Sections keep their other visibility conditions, and edit mode shows every section.
+
+Without WallPanel the media query does not match, so sections show their normal (screensaver off) state.
+`wallpanel_screensaver: only` also marks a section as visible only during the screensaver, but because WallPanel adds
+the condition, the section can show briefly while the page loads. Prefer the `screen` condition.
+
+`screensaver_entity` is optional in underlay mode. It still reflects and controls the screensaver state, for example
+for automations, but the dashboard layout no longer depends on it.
+
+### Transitions
 
 - **Start:** the first media item is loaded while the dashboard is still unchanged. The media is then revealed by fading
-  Home Assistant's own panel and view backgrounds out over it, while the sections that depend on `screensaver_entity`
-  fade out. The entity is switched and the newly visible sections fade in.
-- **Stop:** the backgrounds fade back in over the media while the sections are swapped back the same way.
-- Sections whose `visibility` does not reference `screensaver_entity` (a clock, a calendar, ...) are never faded.
-  Override this per section with `wallpanel_fade: true` or `wallpanel_fade: false` in the section's configuration.
-- Changing `screensaver_entity` directly (by hand or from an automation) makes Home Assistant swap the sections
-  immediately, before WallPanel can fade them. Use the `start` / `stop` [commands](configuration.md#commands-from-home-assistant)
-  to get the full transition.
+  Home Assistant's own panel and view backgrounds out over it, while the sections that are hidden during the
+  screensaver fade out and the sections shown only during the screensaver fade in.
+- **Stop:** the backgrounds fade back in over the media while the sections are switched back the same way.
+- Always visible sections are never faded.
+- Every start and stop fades, including ones triggered by `screensaver_entity` or the `start` / `stop`
+  [commands](configuration.md#commands-from-home-assistant).
 
 !!! note
     Home Assistant 2026.11 made `home-assistant-main` an isolated stacking context while leaving it `display: inline`.
