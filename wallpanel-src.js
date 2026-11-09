@@ -1311,9 +1311,9 @@ function getHaPanelLovelace() {
 //   `not screen (wallpanel-screensaver)` to the section's visibility when HA hands the
 //   section its config (a copy; the stored dashboard config is not changed).
 // - `wallpanel_screensaver: show`: always visible, nothing is added.
-// - Only during the screensaver: give the section the condition
-//   `screen (wallpanel-screensaver)` itself, so HA hides it before WallPanel loads
-//   (`wallpanel_screensaver: only` also works, but can show briefly on page load).
+// - `wallpanel_screensaver: only`: visible only while the screensaver runs. Giving the
+//   section the condition `screen (wallpanel-screensaver)` natively as well keeps it
+//   hidden even before WallPanel has loaded.
 // Without WallPanel the media query does not match, so sections behave as if the
 // screensaver were off.
 // ---------------------------------------------------------------------------------

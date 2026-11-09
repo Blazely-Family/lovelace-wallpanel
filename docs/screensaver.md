@@ -51,7 +51,7 @@ Each section of a sections view is in one of three states:
 | ----- | --------------------- |
 | Hidden while the screensaver runs *(default)* | nothing |
 | Always visible | `wallpanel_screensaver: show` |
-| Visible only while the screensaver runs | a `screen` visibility condition on `(wallpanel-screensaver)` |
+| Visible only while the screensaver runs | `wallpanel_screensaver: only` |
 
 ```yaml
 # Always visible (e.g. a clock)
@@ -61,23 +61,31 @@ Each section of a sections view is in one of three states:
 
 # Visible only while the screensaver runs
 - type: grid
-  visibility:
-    - condition: screen
-      media_query: "(wallpanel-screensaver)"
+  wallpanel_screensaver: only
   cards: ...
 ```
 
 The switching is done by Home Assistant's own visibility logic. WallPanel answers the media query
 `(wallpanel-screensaver)` itself: it matches while the screensaver runs. For default sections, WallPanel adds
-`not screen (wallpanel-screensaver)` to the visibility conditions it hands to the section (your stored dashboard
-configuration is not changed). For sections shown only during the screensaver, it hands over the `screen` condition
-wrapped in an equivalent `and` condition, so that Home Assistant subscribes it to WallPanel's media query even if the
-section was rendered before WallPanel loaded. Sections keep their other visibility conditions, and edit mode shows
-every section.
+`not screen (wallpanel-screensaver)` to the visibility conditions it hands to the section, and for
+`wallpanel_screensaver: only` sections a `screen (wallpanel-screensaver)` condition (wrapped in an equivalent `and`
+condition, so that Home Assistant subscribes it to WallPanel's media query even if the section was rendered before
+WallPanel loaded). Your stored dashboard configuration is not changed. Sections keep their other visibility
+conditions, and edit mode shows every section.
 
-Without WallPanel the media query does not match, so sections show their normal (screensaver off) state.
-`wallpanel_screensaver: only` also marks a section as visible only during the screensaver, but because WallPanel adds
-the condition, the section can show briefly while the page loads. Prefer the `screen` condition.
+Without WallPanel the media query does not match, so sections show their normal (screensaver off) state, and
+`wallpanel_screensaver: only` sections are visible like any other section. To keep a screensaver-only section hidden
+even before WallPanel has loaded (for example on a slow device where it could otherwise show briefly while the page
+loads), also give it the condition natively:
+
+```yaml
+- type: grid
+  wallpanel_screensaver: only
+  visibility:
+    - condition: screen
+      media_query: "(wallpanel-screensaver)"
+  cards: ...
+```
 
 `screensaver_entity` is optional in underlay mode. It still reflects and controls the screensaver state, for example
 for automations, but the dashboard layout no longer depends on it.
