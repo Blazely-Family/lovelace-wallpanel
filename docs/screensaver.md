@@ -116,20 +116,23 @@ theme's card background variable.
   screensaver starts, and back when it stops. Use it in `calc()` to fade values smoothly; a rule under the
   attribute above switches at once.
 
-Example for the Frosted Glass Lite themes: darken the card glass during the screensaver, fading with the
-backgrounds, and add a grain texture while it runs:
+Example for the Frosted Glass Lite themes: make the card glass less see-through during the screensaver at
+about the same shade (lighter colour, higher opacity), fading with the backgrounds:
 
 ```yaml
 wallpanel:
   screensaver_underlay: true
   screensaver_underlay_style: |
     :host {
-      --ha-card-glass-tint: rgba(28, 29, 33, calc(0.54 + 0.09 * var(--wallpanel-screensaver)));
-    }
-    :host([wallpanel-underlay-background-hidden]) {
-      --ha-card-glass-tint: url("/local/grain.png"), rgba(28, 29, 33, calc(0.54 + 0.09 * var(--wallpanel-screensaver)));
+      --ha-card-glass-tint: rgba(
+        calc(28 + 16 * var(--wallpanel-screensaver)),
+        calc(29 + 16 * var(--wallpanel-screensaver)),
+        calc(33 + 17 * var(--wallpanel-screensaver)),
+        calc(0.54 + 0.24 * var(--wallpanel-screensaver)));
     }
 ```
+
+Only numbers can fade. Images (textures, gradients) in such a rule switch at once.
 
 Avoid `backdrop-filter` (blur) on cards: with a moving slideshow behind them it is recalculated on every
 frame and is expensive on low-power devices.
