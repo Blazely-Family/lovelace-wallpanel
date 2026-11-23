@@ -25,6 +25,7 @@
 	"scripts": {
 		"build": "rollup -c",
 		"test:commands": "node --test tests/command-entity.test.cjs",
-		"test:immich": "node --test tests/immich-tag-exclusion.test.cjs"
+		"test:immich": "node --test tests/immich-tag-exclusion.test.cjs",
+		"test:underlay": "node --test tests/underlay-sections.test.cjs tests/underlay-settle.test.cjs"
 	}
 }

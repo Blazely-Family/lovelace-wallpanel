@@ -145,6 +145,7 @@ let activeTab = null;
 let wallpanelContainer = null;
 let wallpanel = null;
 let skipDisableScreensaverOnLocationChanged = false;
+let skipDisableScreensaverOnLocationChangedTimer = null;
 const classStyles = {
 	"wallpanel-screensaver-image-background": {
 		filter: "blur(15px)",
@@ -1570,6 +1571,11 @@ function installUnderlaySectionConfigHook(sectionClass, transform) {
 const underlayMediaQuery = createUnderlayMediaQuery(EventTarget, Event);
 let underlaySectionHook = null;
 let underlaySwitchSequence = 0;
+let underlaySettleSequence = 0;
+// Elements WallPanel gave inline fade styles (sections, view header / footer).
+const underlayFadedElements = new Set();
+// The hui-root seen last by checkUnderlayHuiRoot().
+let underlayHuiRoot = null;
 
 function setupUnderlaySections() {
 	installUnderlayMatchMedia(window, underlayMediaQuery);
@@ -1623,6 +1629,8 @@ function setUnderlayHeaderFooterState(screensaverActive, fadeTime, hideOnly = fa
 		element.style.transition = transition;
 		element.style.opacity = visible ? "" : "0";
 		element.style.pointerEvents = visible ? "" : "none";
+		if (visible && !transition) underlayFadedElements.delete(element);
+		else underlayFadedElements.add(element);
 	});
 }
 
@@ -1713,6 +1721,7 @@ function setSectionsOpacity(sections, opacity, fadeTime) {
 	sections.forEach((section) => {
 		section.style.transition = transition;
 		section.style.opacity = String(opacity);
+		underlayFadedElements.add(section);
 	});
 }
 
@@ -1720,7 +1729,53 @@ function clearSectionsFade(sections) {
 	sections.forEach((section) => {
 		section.style.removeProperty("transition");
 		section.style.removeProperty("opacity");
+		underlayFadedElements.delete(section);
 	});
+}
+
+// Finish every screensaver transition at once, in the given state: cancel a running
+// section switch, remove the inline fade styles WallPanel left on sections and view
+// headers / footers (also those of a view that is no longer shown, which HA keeps in its
+// view cache and shows again later), and set the media query, HA's backgrounds and the
+// current view's header / footer without a fade.
+// Used when the view or dashboard changes during a fade, which would otherwise leave the
+// old view half faded: sections invisible but still clickable, or screensaver-only
+// sections stuck on screen.
+function settleUnderlayTransitions(screensaverActive) {
+	screensaverActive = Boolean(screensaverActive);
+	const sequence = ++underlaySwitchSequence;
+	const settle = ++underlaySettleSequence;
+	logger.debug(`Settling underlay transitions, screensaver ${screensaverActive ? "on" : "off"}`);
+	underlayFadedElements.forEach((element) => {
+		element.style.removeProperty("transition");
+		element.style.removeProperty("opacity");
+		element.style.removeProperty("pointer-events");
+	});
+	underlayFadedElements.clear();
+	prepareUnderlaySections();
+	underlayMediaQuery.setMatches(screensaverActive);
+	const apply = () => {
+		if (sequence !== underlaySwitchSequence || settle !== underlaySettleSequence) return;
+		underlayHuiRoot = getHuiRoot();
+		setUnderlayBackgroundHidden(screensaverActive, 0);
+		setUnderlayHeaderFooterState(screensaverActive, 0);
+	};
+	apply();
+	// The new view (or a new hui-root) can render a moment later.
+	nextAnimationFrames(2).then(apply);
+	setTimeout(apply, 1000);
+}
+
+// A dashboard reload replaces hui-root, which loses the "backgrounds hidden" state while
+// the screensaver runs (HA's background then covers the media). Called every second.
+function checkUnderlayHuiRoot(screensaverActive) {
+	const huiRoot = getHuiRoot();
+	if (!huiRoot || huiRoot === underlayHuiRoot) return;
+	const replaced = underlayHuiRoot !== null;
+	underlayHuiRoot = huiRoot;
+	if (replaced && huiRoot.hasAttribute(UNDERLAY_BACKGROUND_HIDDEN_ATTR) !== Boolean(screensaverActive)) {
+		settleUnderlayTransitions(screensaverActive);
+	}
 }
 
 function sleep(seconds) {
@@ -1887,7 +1942,7 @@ function navigate(path, keepSearch = true) {
 
 	const currentPath = window.location.pathname + window.location.search + window.location.hash;
 	if (path === currentPath) {
-		return;
+		return false;
 	}
 
 	history.pushState(null, "", path);
@@ -1898,6 +1953,20 @@ function navigate(path, keepSearch = true) {
 			composed: true
 		})
 	);
+	return true;
+}
+
+// Navigate on behalf of the screensaver: the location change this causes does not stop
+// the screensaver (or settle its transitions). Nothing is skipped if the panel is already
+// at path, so that the next, unrelated location change is handled normally.
+function navigateForScreensaver(path) {
+	if (!navigate(path)) return false;
+	skipDisableScreensaverOnLocationChanged = true;
+	clearTimeout(skipDisableScreensaverOnLocationChangedTimer);
+	skipDisableScreensaverOnLocationChangedTimer = setTimeout(() => {
+		skipDisableScreensaverOnLocationChanged = false;
+	}, 5000);
+	return true;
 }
 
 function isFullscreen() {
@@ -2212,6 +2281,9 @@ function initWallpanel() {
 		timer() {
 			if (!config.enabled || !activePanel) {
 				return;
+			}
+			if (config.screensaver_underlay) {
+				checkUnderlayHuiRoot(this.screensaverRunning());
 			}
 			if (this.screensaverRunning()) {
 				if (config.disable_screensaver_on_browser_mod_popup && getActiveBrowserModPopup()) {
@@ -5137,11 +5209,7 @@ function initWallpanel() {
 				const isCurrentSession = () => this.screensaverRunning() && this.screensaverSessionId === screensaverSessionId;
 				// Navigate first, so that the sections of the screensaver view are switched.
 				if (config.screensaver_start_navigation_path) {
-					skipDisableScreensaverOnLocationChanged = true;
-					navigate(config.screensaver_start_navigation_path);
-					setTimeout(() => {
-						skipDisableScreensaverOnLocationChanged = false;
-					}, 5000);
+					navigateForScreensaver(config.screensaver_start_navigation_path);
 					await nextAnimationFrames(2);
 					if (!isCurrentSession()) return;
 				}
@@ -5154,12 +5222,10 @@ function initWallpanel() {
 				// Reveal the media (HA's backgrounds fade out over it) while the dashboard
 				// sections are switched to their screensaver state.
 				this.showUnderlayMedia(screensaverSessionId);
-				const switched = await switchUnderlaySections(
-					true,
-					config.screensaver_underlay_content_fade_time,
-					isCurrentSession
-				);
-				if (!switched) return;
+				// The switch is cut short if the view changes meanwhile (the transitions are
+				// then settled at once); the screensaver still has to be set up then.
+				await switchUnderlaySections(true, config.screensaver_underlay_content_fade_time, isCurrentSession);
+				if (!isCurrentSession()) return;
 			}
 			this.setupScreensaver();
 
@@ -5205,11 +5271,7 @@ function initWallpanel() {
 					this.screensaverStopNavigationPathTimeout = setTimeout(
 						() => {
 							if (config.screensaver_start_navigation_path) {
-								skipDisableScreensaverOnLocationChanged = true;
-								navigate(config.screensaver_start_navigation_path);
-								setTimeout(() => {
-									skipDisableScreensaverOnLocationChanged = false;
-								}, 5000);
+								navigateForScreensaver(config.screensaver_start_navigation_path);
 							}
 							if (config.screensaver_stop_close_browser_mod_popup) {
 								getActiveBrowserModPopups().forEach((popup) => {
@@ -5865,20 +5927,30 @@ function locationChanged() {
 
 	currentLocation = window.location.href;
 
+	// The screensaver navigated here itself (screensaver_start_navigation_path).
+	const screensaverNavigation = skipDisableScreensaverOnLocationChanged;
+	skipDisableScreensaverOnLocationChanged = false;
+
 	if (
 		wallpanel &&
 		wallpanel.screensaverRunning &&
 		wallpanel.screensaverRunning() &&
 		config.stop_screensaver_on_location_change
 	) {
-		if (skipDisableScreensaverOnLocationChanged) {
-			skipDisableScreensaverOnLocationChanged = false;
+		if (screensaverNavigation) {
 			if (wallpanel.screensaverStopNavigationPathTimeout) {
 				clearTimeout(wallpanel.screensaverStopNavigationPathTimeout);
 			}
 		} else {
 			wallpanel.stopScreensaver();
 		}
+	}
+
+	// A view change (navigation, Browser Mod, a tap on a link) during a screensaver fade
+	// would leave the sections / header / footer of the old view half faded. Finish all
+	// transitions at once, in the state the screensaver is in now.
+	if (wallpanel && wallpanel.screensaverRunning && config.screensaver_underlay && !screensaverNavigation) {
+		settleUnderlayTransitions(wallpanel.screensaverRunning());
 	}
 
 	let panel = null;
