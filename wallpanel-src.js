@@ -123,6 +123,11 @@ const defaultConfig = {
 	profile: "",
 	profile_entity: "",
 	command_entity: "",
+	light_sensor_entity: "",
+	light_sensor_poll_interval: 2,
+	light_sensor_min_change: 1,
+	light_sensor_min_change_percent: 10,
+	light_sensor_report_interval: 60,
 	profiles: {}
 };
 const renamedConfigOptions = {
@@ -1037,6 +1042,106 @@ function mergeConfig(target, ...sources) {
 	return mergeConfig(target, ...sources);
 }
 
+// Reports the tablet's ambient light sensor (Fully Kiosk JavaScript Interface) to an input_number
+// in Home Assistant as soon as it changes noticeably, over the frontend's existing connection.
+// Plain functions so the decision logic can be unit tested without a browser.
+const lightSensorReporter = {
+	timer: null,
+	lastValue: null,
+	lastReportAt: 0,
+	lastEntity: null,
+
+	// Lux from a fully.getSensorInfo() result (JSON string or array); null when there is no light sensor.
+	parseLux(sensorInfo) {
+		let sensors = sensorInfo;
+		if (typeof sensors === "string") {
+			try {
+				sensors = JSON.parse(sensors);
+			} catch {
+				return null;
+			}
+		}
+		if (!Array.isArray(sensors)) return null;
+		// Android Sensor.TYPE_LIGHT = 5
+		const light = sensors.find((s) => s && s.type === 5 && Array.isArray(s.values) && s.values.length > 0);
+		if (!light) return null;
+		const lux = Number(light.values[0]);
+		return Number.isFinite(lux) ? lux : null;
+	},
+
+	// True when a reading differs enough from the last report, or the heartbeat is due.
+	shouldReport(cfg, lastValue, lastReportAt, value, now) {
+		if (lastValue === null) return true;
+		const reportInterval = Number(cfg.light_sensor_report_interval) || 0;
+		if (reportInterval > 0 && now - lastReportAt >= reportInterval * 1000) return true;
+		const change = Math.abs(value - lastValue);
+		const minChange = Math.max(
+			Number(cfg.light_sensor_min_change) || 0,
+			(Math.abs(lastValue) * (Number(cfg.light_sensor_min_change_percent) || 0)) / 100
+		);
+		return change > 0 && change >= minChange;
+	},
+
+	tick() {
+		const entity = config.light_sensor_entity;
+		if (!entity) return;
+		const fully = window.fully;
+		if (!fully || typeof fully.getSensorInfo !== "function") return;
+		const hass = elHass && (elHass.hass || elHass.__hass);
+		if (!hass || !hass.states[entity]) return;
+		let lux = null;
+		try {
+			lux = this.parseLux(fully.getSensorInfo());
+		} catch (e) {
+			logger.debug("Failed to read light sensor", e);
+		}
+		if (lux === null) return;
+		const attrs = hass.states[entity].attributes || {};
+		lux = this.clamp(Math.round(lux), attrs.min, attrs.max);
+		if (entity !== this.lastEntity) {
+			this.lastEntity = entity;
+			this.lastValue = null;
+		}
+		const now = Date.now();
+		if (!this.shouldReport(config, this.lastValue, this.lastReportAt, lux, now)) return;
+		this.lastValue = lux;
+		this.lastReportAt = now;
+		if (Number(hass.states[entity].state) === lux) return;
+		logger.debug("Reporting light sensor", entity, lux);
+		hass
+			.callService("input_number", "set_value", { entity_id: entity, value: lux }, undefined, false)
+			.catch((error) => {
+				// Report again on the next tick
+				this.lastValue = null;
+				logger.debug("Failed to set light sensor entity", error);
+			});
+	},
+
+	clamp(value, min, max) {
+		if (Number.isFinite(Number(min))) value = Math.max(Number(min), value);
+		if (Number.isFinite(Number(max))) value = Math.min(Number(max), value);
+		return value;
+	},
+
+	// (Re)start polling with the current config; stops when no topic is configured.
+	update() {
+		const interval = Math.max(0.5, Number(config.light_sensor_poll_interval) || 2) * 1000;
+		if (!config.light_sensor_entity || !window.fully) {
+			if (this.timer) {
+				clearInterval(this.timer);
+				this.timer = null;
+				this.interval = null;
+			}
+			return;
+		}
+		if (this.timer && this.interval === interval) return;
+		if (this.timer) clearInterval(this.timer);
+		this.interval = interval;
+		this.timer = setInterval(this.tick.bind(this), interval);
+		this.tick();
+	}
+};
+
 function updateConfig() {
 	const params = new URLSearchParams(window.location.search);
 
@@ -1183,6 +1288,8 @@ function updateConfig() {
 	logger.systemTargetLogLevel = config.system_target_log_level;
 
 	logger.debug("Wallpanel config is now:", config);
+
+	lightSensorReporter.update();
 
 	if (wallpanel) {
 		if (isActive()) {
