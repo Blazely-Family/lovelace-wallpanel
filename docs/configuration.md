@@ -104,11 +104,6 @@ You can set the following configuration parameters for every individual Home Ass
 | profile                          | Configuration profile to activate. If browser_mod is installed, `${browser_id}` will be replaced with Browser ID (see [Browser Mod](browser-mod.md#placeholder-browser_id)). |            |
 | profile_entity                   | An entity of type 'input_text' used for dynamic activation of profiles. If browser_mod is installed, `${browser_id}` will be replaced with Browser ID (see [Browser Mod](browser-mod.md#placeholder-browser_id)). |            |
 | command_entity                   | An entity of type 'input_text' used to send commands like `next` or `previous` to WallPanel. See [Commands from Home Assistant](configuration.md#commands-from-home-assistant). |            |
-| light_sensor_entity              | *(Blazely fork)* An `input_number` that WallPanel keeps updated with the tablet's ambient light (lux) when running in Fully Kiosk Browser with the JavaScript Interface enabled. Use a [profile](configuration.md#profiles) per device or user to point each panel at its own entity. See [Light sensor reporting](configuration.md#light-sensor-reporting-blazely-fork). | |
-| light_sensor_poll_interval       | *(Blazely fork)* Seconds between light sensor readings (read locally, nothing is sent unless the value changes). | 2 |
-| light_sensor_min_change          | *(Blazely fork)* Minimum change in lux before a new value is sent. | 1 |
-| light_sensor_min_change_percent  | *(Blazely fork)* Minimum change as a percentage of the last sent value; the larger of this and `light_sensor_min_change` applies. | 10 |
-| light_sensor_report_interval     | *(Blazely fork)* Seconds after which the value is sent again even when unchanged (0 = never). | 60 |
 | camera_motion_detection_enabled          | Activate camera based motion detection? Screensaver is stopped when movement is detected See [Camera motion detection](camera-motion-detection.md) for details. | false      |
 | camera_motion_detection_stop_screensaver | Stop screensaver when motion is detected?                                                      | true       |
 | camera_motion_detection_set_entity       | An entity of type 'input_boolean' to update with the motion detection state (on = motion detected, off = no motion detected). | | 
@@ -367,22 +362,3 @@ https://hass:8123/dashboard-test/1
 ```
 
 If you leave the list empty, WallPanel will be enabled on all views by default.
-
-## Light sensor reporting (Blazely fork)
-
-In Fully Kiosk Browser (with *Enable JavaScript Interface* on), WallPanel can feed the tablet's ambient light sensor into Home Assistant much faster than Fully's own once-a-minute report.
-Every `light_sensor_poll_interval` seconds it reads the sensor locally (`fully.getSensorInfo()`), and when the value has changed by at least `light_sensor_min_change` lux and `light_sensor_min_change_percent` percent it calls `input_number.set_value` on `light_sensor_entity`, over the dashboard's existing connection to Home Assistant.
-So small flicker is ignored, while lights switching on or off reach Home Assistant within a couple of seconds.
-
-Create one `input_number` per panel (for example min 0, max 2000, step 1, unit `lx`) and point each panel at its own one with a profile:
-
-```yaml
-wallpanel:
-  enabled: true
-  profiles:
-    user.office_panel:
-      light_sensor_entity: input_number.office_panel_lux
-```
-
-Reporting only runs while a dashboard with this configuration is open.
-
